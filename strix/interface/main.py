@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import sys
 from pathlib import Path
+from typing import cast
 
 from rich.console import Console
 from rich.panel import Panel
@@ -263,6 +264,28 @@ def display_completion_message(args: argparse.Namespace, results_path: Path) -> 
 
     if stats_text.plain:
         panel_parts.extend(["\n", stats_text])
+
+    results = (report_state.scan_results or {}) if report_state is not None else {}
+    for item in cast("list[dict[str, str]]", results.get("fix_branches") or []):
+        panel_parts.extend(
+            [
+                "\n\n",
+                Text(f"Fix  {item['title']}", style="bold #22c55e"),
+                "\n",
+                Text(f"     {item['branch']}"),
+                "\n",
+                Text(f"     {item['source_path']}", style="dim"),
+            ]
+        )
+    for item in cast("list[dict[str, str]]", results.get("fix_branch_errors") or []):
+        panel_parts.extend(
+            [
+                "\n\n",
+                Text(f"Fix unavailable  {item['title']}", style="bold #eab308"),
+                "\n",
+                Text(f"     {item['error']}"),
+            ]
+        )
 
     results_text = Text()
     results_text.append("\n")

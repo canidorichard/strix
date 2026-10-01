@@ -625,7 +625,13 @@ async def run_strix_scan(
             agent_id=root_id,
             interactive=interactive,
             session=root_session,
-            start_parked=bool(interactive and is_resume and root_status != "running"),
+            return_on_completion=fixes is not None,
+            start_parked=bool(
+                interactive
+                and is_resume
+                and root_status != "running"
+                and not (fixes is not None and root_status == "completed")
+            ),
             event_sink=event_sink,
             hooks=hooks,
         )

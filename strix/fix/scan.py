@@ -61,7 +61,9 @@ class ScanFixes:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.directory.chmod(0o700)
         self.path = self.directory / "tasks.json"
-        self.records = json.loads(self.path.read_text()) if self.path.exists() else {}
+        self.records: dict[str, dict[str, Any]] = (
+            json.loads(self.path.read_text()) if self.path.exists() else {}
+        )
         self.sources = [
             Path(s["source_path"]).resolve()
             for s in local_sources
@@ -135,8 +137,9 @@ class ScanFixes:
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def _dispatch(self, finding_id: str) -> None:
+        candidate = None
         try:
-            report, _ = self._finding(finding_id)
+            report, candidate = self._finding(finding_id)
             parent_id = report.get("agent_id") or self._parent_ctx["agent_id"]
             await self.spawn(
                 finding_id,
@@ -149,6 +152,10 @@ class ScanFixes:
             )
         except Exception as error:  # noqa: BLE001 - report launch failure to the scan
             await self._cancel_active(finding_id)
+            if candidate is not None and self.publish_local_branches:
+                record = self.records.setdefault(finding_id, {})
+                record.update(digest=candidate.digest(), status="stopped", reason=str(error))
+                self._save()
             logger.warning("fix.dispatch finding=%s rejected=%s", finding_id, error)
             await self.coordinator.send(
                 self._parent_ctx["agent_id"],
@@ -346,6 +353,10 @@ class ScanFixes:
                     record["reason"] = prepared.stop_reason
                     if prepared.state == "ready":
                         record["artifact"] = str(artifact)
+                except asyncio.CancelledError:
+                    record["status"] = "stopped"
+                    record["reason"] = "Fix preparation was interrupted before completion."
+                    raise
                 except Exception as error:
                     record["status"] = "stopped"
                     record["reason"] = str(error)
@@ -363,6 +374,7 @@ class ScanFixes:
                 **kwargs["parent_ctx"],
                 "sandbox_session": borrowed,
                 "before_agent_finish": hooks.before_finish,
+                "interactive": False,
             }
             assignment = _untrusted_prompt_data(
                 {
@@ -379,6 +391,9 @@ class ScanFixes:
                     "parent_ctx": parent_ctx,
                     "task": kwargs["task"] + "\n\n" + assignment,
                     "skills": ["fix_task"],
+                    # Fix completion starts the verifier; it must not park for
+                    # terminal messages after agent_finish in an interactive scan.
+                    "interactive": False,
                     "factory": lambda **kw: build_fix_agent(name=kw["name"], workspace_root=root),
                     "run_config": _run_config(environment),
                     "hooks": hooks,
@@ -421,10 +436,23 @@ class ScanFixes:
 
         branches: list[dict[str, str]] = []
         errors: list[dict[str, str]] = []
+        titles: dict[str, str] = {
+            str(report["id"]): str(report.get("title") or report["id"])
+            for report in self.report_state.get_existing_vulnerabilities()
+        }
         for finding_id, record in sorted(self.records.items()):
+            title = titles.get(finding_id, finding_id)
             if record.get("status") != "done" or not record.get("artifact"):
+                errors.append(
+                    {
+                        "finding_id": finding_id,
+                        "title": title,
+                        "error": str(
+                            record.get("reason") or "Fix did not produce a verified artifact."
+                        ),
+                    }
+                )
                 continue
-            title = finding_id
             try:
                 report, candidate = self._finding(finding_id)
                 assert candidate.source_identity is not None

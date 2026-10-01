@@ -103,8 +103,11 @@ async def test_a_live_child_is_settled_before_sessions_close(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "interactive,local_branches", [(False, False), (False, True), (True, True)]
+)
 async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, interactive: bool, local_branches: bool
 ) -> None:
     _wire_runner(monkeypatch, tmp_path)
     events: list[str] = []
@@ -122,8 +125,9 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
             events.append("save")
 
     class Fixes:
-        def __init__(self, **_: Any) -> None:
-            pass
+        def __init__(self, **options: Any) -> None:
+            assert options["publish_local_branches"] is local_branches
+            assert (options["sink"] is not None) is not local_branches
 
         def start(self, *_: Any) -> None:
             events.append("fixes listening")
@@ -138,7 +142,12 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
     async def assessment(_: Any) -> None:
         events.append("assessment published")
 
-    async def root(**_: Any) -> types.SimpleNamespace:
+    async def platform_fix_sink(*_: Any) -> bool:
+        return True
+
+    async def root(**kwargs: Any) -> types.SimpleNamespace:
+        assert kwargs["interactive"] is interactive
+        assert kwargs["return_on_completion"] is True
         return types.SimpleNamespace(final_output={"scan_completed": True})
 
     async def cleanup(*_: Any) -> None:
@@ -149,19 +158,26 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
     monkeypatch.setattr(runner, "run_agent_loop", root)
     monkeypatch.setattr(session_manager, "cleanup", cleanup)
     await runner.run_strix_scan(
-        scan_config={"targets": [], "scan_mode": "deep"},
+        scan_config={
+            "targets": [],
+            "scan_mode": "deep",
+            "local_fix_branches_enabled": local_branches,
+        },
         scan_id="scan",
         image="image",
         local_sources=[{"source_path": str(tmp_path)}],
         assessment_sink=assessment,
+        fix_sink=None if local_branches else platform_fix_sink,
+        interactive=interactive,
     )
     assert events.index("assessment published") < events.index("fixes finished")
     assert events.index("fixes finished") < events.index("sandbox deleted")
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("interactive", [False, True])
 async def test_disabled_one_click_fixes_skips_fix_runtime(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, interactive: bool
 ) -> None:
     _wire_runner(monkeypatch, tmp_path)
     events: list[str] = []
@@ -185,7 +201,8 @@ async def test_disabled_one_click_fixes_skips_fix_runtime(
     async def assessment(_: Any) -> None:
         events.append("assessment published")
 
-    async def root(**_: Any) -> types.SimpleNamespace:
+    async def root(**kwargs: Any) -> types.SimpleNamespace:
+        assert kwargs["return_on_completion"] is False
         return types.SimpleNamespace(final_output={"scan_completed": True})
 
     monkeypatch.setattr(runner, "get_global_report_state", State)
@@ -201,6 +218,7 @@ async def test_disabled_one_click_fixes_skips_fix_runtime(
         image="image",
         local_sources=[{"source_path": str(tmp_path)}],
         assessment_sink=assessment,
+        interactive=interactive,
     )
 
     assert events == ["assessment published", "save"]

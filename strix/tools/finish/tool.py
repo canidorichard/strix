@@ -79,6 +79,9 @@ def _do_finish(
             "message": "Scan completed successfully",
             "vulnerabilities_found": vuln_count,
         }
+        if report_state.defer_completion:
+            result["fixes_pending"] = True
+            result["message"] = "Assessment complete; fixes are still being prepared."
         result.update(coverage_summary)
         return result
 

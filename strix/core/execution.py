@@ -199,6 +199,7 @@ async def run_agent_loop(
     interactive: bool,
     session: Session | None = None,
     start_parked: bool = False,
+    return_on_completion: bool = False,
     event_sink: StreamEventSink | None = None,
     hooks: RunHooks[dict[str, Any]] | None = None,
 ) -> RunResultBase | None:
@@ -218,6 +219,7 @@ async def run_agent_loop(
             interactive=interactive,
             session=session,
             start_parked=start_parked,
+            return_on_completion=return_on_completion,
             event_sink=event_sink,
             hooks=hooks,
         )
@@ -225,7 +227,7 @@ async def run_agent_loop(
         request_log.reset_call_context(token)
 
 
-async def _run_agent_loop(
+async def _run_agent_loop(  # noqa: PLR0912 - interactive completion and cancellation differ
     *,
     agent: Any,
     initial_input: Any,
@@ -237,6 +239,7 @@ async def _run_agent_loop(
     interactive: bool,
     session: Session | None,
     start_parked: bool,
+    return_on_completion: bool,
     event_sink: StreamEventSink | None,
     hooks: RunHooks[dict[str, Any]] | None,
 ) -> RunResultBase | None:
@@ -284,10 +287,17 @@ async def _run_agent_loop(
         return result
 
     while True:
+        if return_on_completion and await _agent_status(coordinator, agent_id) == "completed":
+            # The assessment is final. Let the caller await fixes and publish
+            # branches while the interactive UI remains open to display them.
+            await coordinator.attach_runtime(agent_id, resumable=False)
+            return result
         timeout = await _plain_waiting_timeout(coordinator, agent_id)
         try:
             woke = await coordinator.wait_for_message(agent_id, timeout=timeout)
         except asyncio.CancelledError:
+            if return_on_completion:
+                raise
             return result
 
         if coordinator.budget_stopped:

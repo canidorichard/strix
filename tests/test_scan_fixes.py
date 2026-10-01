@@ -32,7 +32,7 @@ from tests.test_fix_reliability import LocalSandbox, existing_suite
 from tests.test_fix_runtime import _git, _request, _workspace
 
 
-def setup(tmp_path):
+def setup(tmp_path, *, interactive=False):
     source, _ = _workspace(tmp_path)
     commit = existing_suite(source)
     parent = LocalSandbox(tmp_path / "sandbox")
@@ -62,8 +62,7 @@ def setup(tmp_path):
             coordinator=coordinator,
             agents_db_path=tmp_path / "agents.db",
             sessions_to_close=sessions,
-            interactive=False,
-            **kwargs,
+            **{"interactive": interactive, **kwargs},
         )
 
     async def spawn(**kwargs):
@@ -146,8 +145,11 @@ async def test_native_parallel_fixes_deliver_patches_and_preserve_scan_source(
 
 
 @pytest.mark.asyncio
-async def test_ready_fix_creates_local_branch_without_changing_checkout(tmp_path, monkeypatch):
-    fixes, _, source, _, _, context, sessions = setup(tmp_path)
+@pytest.mark.parametrize("interactive", [False, True])
+async def test_ready_fix_creates_local_branch_without_changing_checkout(
+    tmp_path, monkeypatch, interactive
+):
+    fixes, _, source, _, _, context, sessions = setup(tmp_path, interactive=interactive)
     fixes.publish_local_branches = True
     original_head = _git(source, "rev-parse", "HEAD")
     original_branch = _git(source, "branch", "--show-current")
@@ -162,7 +164,7 @@ async def test_ready_fix_creates_local_branch_without_changing_checkout(tmp_path
     )
 
     assert (await delegate(context))["success"]
-    branches, errors = await fixes.wait()
+    branches, errors = await asyncio.wait_for(fixes.wait(), timeout=20)
 
     assert not errors
     assert len(branches) == 1
@@ -208,7 +210,7 @@ async def test_blocked_native_child_has_no_patch(tmp_path, monkeypatch):
         scan_module,
         "_run_config",
         lambda env: RunConfig(
-            model=ScriptedModel([*patch(), finish("blocked")]),
+            model=ScriptedModel([*patch(), finish("blocked", "Required database is unavailable")]),
             sandbox=SandboxRunConfig(session=env.session),
             tracing_disabled=True,
         ),
@@ -216,7 +218,9 @@ async def test_blocked_native_child_has_no_patch(tmp_path, monkeypatch):
     assert (await delegate(context))["success"]
     branches, errors = await fixes.wait()
     assert branches == []
-    assert errors == []
+    assert len(errors) == 1
+    assert errors[0]["finding_id"] == "finding"
+    assert "Required database is unavailable" in errors[0]["error"]
     assert fixes.records["finding"]["status"] == "stopped"
     assert not list((tmp_path / "state/fixes").glob("*/prepared-fix.zip"))
     for session in sessions:
@@ -224,7 +228,54 @@ async def test_blocked_native_child_has_no_patch(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_revised_candidate_does_not_publish_stale_ready_artifact(tmp_path):
+async def test_cancelled_verification_is_reported_without_publishing_a_branch(
+    tmp_path, monkeypatch
+):
+    fixes, _, source, _, _, context, sessions = setup(tmp_path, interactive=True)
+    fixes.publish_local_branches = True
+    reviewing = asyncio.Event()
+
+    async def verify(*_args):
+        reviewing.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(scan_module, "finish_native_fix", verify)
+    monkeypatch.setattr(
+        scan_module,
+        "_run_config",
+        lambda env: RunConfig(
+            model=ScriptedModel([finish("blocked")]),
+            sandbox=SandboxRunConfig(session=env.session),
+            tracing_disabled=True,
+        ),
+    )
+    assert (await delegate(context))["success"]
+    await asyncio.wait_for(reviewing.wait(), timeout=5)
+    await fixes.close()
+    branches, errors = await fixes.wait()
+    assert branches == []
+    assert "interrupted" in errors[0]["error"]
+    assert fixes.records["finding"]["status"] == "stopped"
+    assert _git(source, "branch", "--list", "strix/fix-*") == ""
+    assert not list((tmp_path / "state/fixes").glob("*/prepared-fix.zip"))
+    for session in sessions:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failure_is_reported_before_an_agent_exists(tmp_path, monkeypatch):
+    fixes, _, _, _, _, context, _ = setup(tmp_path)
+    fixes.publish_local_branches = True
+    fixes._parent_ctx = context.context
+    monkeypatch.setattr(fixes, "spawn", AsyncMock(side_effect=RuntimeError("Source unavailable")))
+    await fixes._dispatch("finding")
+    branches, errors = await fixes.wait()
+    assert branches == []
+    assert errors[0]["error"] == "Source unavailable"
+
+
+@pytest.mark.asyncio
+async def test_revised_candidate_does_not_publish_stale_ready_artifact(tmp_path, monkeypatch):
     fixes, report, source, _, _, _, _ = setup(tmp_path)
     fixes.publish_local_branches = True
     original_digest = fixes._finding("finding")[1].digest()
@@ -237,6 +288,8 @@ async def test_revised_candidate_does_not_publish_stale_ready_artifact(tmp_path)
         "artifact": str(artifact),
     }
     report["fix_candidate"]["security_invariant"] = "Revised attack"
+    # Check publication of the old artifact without starting the new attempt.
+    monkeypatch.setattr(fixes, "_reconcile", AsyncMock())
 
     branches, errors = await fixes.wait()
 
@@ -326,6 +379,7 @@ async def test_finding_changed_before_delivery_discards_reviewed_patch(
         )
 
     monkeypatch.setattr(scan_module, "finish_native_fix", finish_preparation)
+    monkeypatch.setattr(scan_module, "_run_config", lambda _env: RunConfig(tracing_disabled=True))
     fixes.sink = AsyncMock(return_value=True)
     await fixes.spawn(
         "finding", spawn, parent_ctx=context.context, name="Fix", task="Repair", skills=[]

@@ -258,11 +258,12 @@ class GoTuiRuntime:
             if self.report_state is not None:
                 results = self.report_state.scan_results or {}
                 for item in results.get("fix_branches") or []:
-                    self.controller.add_message(
-                        f"Prepared fix branch for {item['title']}: {item['branch']}"
+                    self._show_fix_result(
+                        f"Prepared fix branch for {item['title']}: {item['branch']} "
+                        f"in {item['source_path']}"
                     )
                 for item in results.get("fix_branch_errors") or []:
-                    self.controller.add_message(
+                    self._show_fix_result(
                         f"Could not create fix branch for {item['title']}: {item['error']}",
                         "error",
                     )
@@ -287,6 +288,21 @@ class GoTuiRuntime:
             with contextlib.suppress(Exception):
                 await self._sync_agent_state()
             self.controller.notify_changed()
+
+    def _show_fix_result(self, text: str, level: str = "info") -> None:
+        self.controller.add_message(text, level)
+        root_id = next(
+            (
+                agent_id
+                for agent_id, agent in self.live_view.agents.items()
+                if agent.get("parent_id") is None
+            ),
+            None,
+        )
+        if root_id is not None:
+            # Controller messages are setup-only in the Go UI. Publish final
+            # fixes into the assessment transcript so they are visible live.
+            self.live_view.record_runtime_message(root_id, text)
 
     def capture_event(self, agent_id: str, event: Any) -> None:
         self.live_view.ingest_sdk_event(agent_id, event)
@@ -359,9 +375,16 @@ class GoTuiRuntime:
                 scan_state = "completed"
             elif root_status == "stopped":
                 scan_state = "stopped"
-            elif root_status == "completed":
-                scan_state = "failed"
-                self.controller.error = "Scan ended without a completed report"
+            elif root_status == "completed" and scan_state != "stopped":
+                fixes_pending = bool(
+                    self.report_state is not None
+                    and self.report_state.defer_completion
+                    and self.report_state.scan_results
+                )
+                scan_state = "preparing_fixes" if fixes_pending else "failed"
+                self.controller.error = (
+                    None if fixes_pending else "Scan ended without a completed report"
+                )
         if scan_state != self.controller.scan_state:
             self.controller.scan_state = scan_state
             changed = True
