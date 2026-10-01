@@ -500,7 +500,13 @@ async def run_strix_scan(
             )
 
         report_state = get_global_report_state()
-        if report_state is not None and local_sources and not interactive:
+        one_click_fixes_enabled = scan_config.get("one_click_fixes_enabled", True) is not False
+        if (
+            one_click_fixes_enabled
+            and report_state is not None
+            and local_sources
+            and not interactive
+        ):
             fixes = ScanFixes(
                 session=sandbox_session,
                 coordinator=coordinator,
