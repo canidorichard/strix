@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -17,7 +18,11 @@ from agents.tool_context import ToolContext
 from strix.core.agents import AgentCoordinator
 from strix.core.execution import spawn_child_agent
 from strix.core.hooks import ReportUsageHooks
-from strix.fix import FindingContext
+from strix.fix import (
+    FindingContext,
+    FixPreparationResultV1,
+    PreparationState,
+)
 from strix.fix import scan as scan_module
 from strix.fix.scan import ScanFixes
 from strix.fix.session import WorktreeSession
@@ -188,12 +193,27 @@ async def test_finding_revision_invalidates_active_completion(tmp_path):
     assert not fixes._current("finding", digest)
 
 
+@pytest.mark.asyncio
+async def test_superseded_fix_agent_is_marked_stopped_before_cancellation(tmp_path):
+    fixes, _, _, _, _, _, _ = setup(tmp_path)
+    await fixes.coordinator.register("old-fix", "Fix", "reporter", skills=["fix_task"])
+    await fixes.coordinator.mark_running("old-fix")
+    task = asyncio.create_task(asyncio.Event().wait())
+    fixes.records["finding"] = {"agent_id": "old-fix", "status": "running"}
+    fixes.tasks["finding"] = task
+
+    await fixes._cancel_active("finding")
+
+    assert fixes.coordinator.statuses["old-fix"] == "stopped"
+    assert task.cancelled()
+
+
 @pytest.mark.parametrize("change", ["revised", "withdrawn", "unconfirmed"])
 async def test_finding_changed_before_delivery_discards_reviewed_patch(
     tmp_path, monkeypatch, change
 ):
     fixes, report, _, _, reports, context, _ = setup(tmp_path)
-    callback = None
+    callback: Any = None
 
     async def spawn(**kwargs):
         nonlocal callback
@@ -211,8 +231,8 @@ async def test_finding_changed_before_delivery_discards_reviewed_patch(
             reports.clear()
         else:
             report["validation_status"] = "unconfirmed"
-        return scan_module.FixPreparationResultV1(
-            state="ready",
+        return FixPreparationResultV1(
+            state=PreparationState.READY,
             stop_reason="Approved.",
             source_identity=request.candidate.source_identity,
             candidate=request.candidate,

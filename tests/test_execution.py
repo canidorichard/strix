@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from agents import RunConfig
 from agents.exceptions import MaxTurnsExceeded
 from agents.items import MessageOutputItem
 from agents.memory import SQLiteSession
@@ -19,11 +20,16 @@ from strix.core import execution
 from strix.core.agents import AgentCoordinator
 from strix.core.execution import (
     _notify_root_on_budget_reserve,
+    _start_child_runner,
     notify_parent_on_terminal,
 )
 from strix.core.sessions import seed_initial_input
 from strix.tools.agents_graph.tools import agent_finish, stop_agent
 from strix.tools.finish.tool import finish_scan
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 _NO_STREAM_EVENTS: list[Any] = []
@@ -141,6 +147,85 @@ async def test_concurrent_reserve_claims_yield_single_root() -> None:
 
     assert results.count("root") == 1
     assert all(r is None for r in results if r != "root")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_native_child_is_always_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coordinator = AgentCoordinator()
+    await coordinator.register("root", "strix", parent_id=None)
+    await coordinator.register("child", "fix", parent_id="root")
+    started = asyncio.Event()
+
+    async def run_forever(**_kwargs: Any) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(execution, "run_agent_loop", run_forever)
+    sessions: list[SQLiteSession] = []
+    await _start_child_runner(
+        parent_ctx={"agent_id": "root", "parent_id": None},
+        coordinator=coordinator,
+        agents_db_path=tmp_path / "agents.sqlite",
+        sessions_to_close=sessions,
+        run_config=RunConfig(tracing_disabled=True),
+        max_turns=10,
+        interactive=False,
+        child_agent=MagicMock(),
+        child_id="child",
+        name="fix",
+        parent_id="root",
+        task="repair",
+        initial_input=[],
+    )
+    await started.wait()
+    task = coordinator.runtimes["child"].task
+    assert task is not None
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert coordinator.statuses["child"] == "stopped"
+    for session in sessions:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_crashed_native_child_is_always_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coordinator = AgentCoordinator()
+    await coordinator.register("root", "strix", parent_id=None)
+    await coordinator.register("child", "fix", parent_id="root")
+
+    async def crash(**_kwargs: Any) -> None:
+        raise RuntimeError("repair crashed")
+
+    monkeypatch.setattr(execution, "run_agent_loop", crash)
+    sessions: list[SQLiteSession] = []
+    await _start_child_runner(
+        parent_ctx={"agent_id": "root", "parent_id": None},
+        coordinator=coordinator,
+        agents_db_path=tmp_path / "agents.sqlite",
+        sessions_to_close=sessions,
+        run_config=RunConfig(tracing_disabled=True),
+        max_turns=10,
+        interactive=False,
+        child_agent=MagicMock(),
+        child_id="child",
+        name="fix",
+        parent_id="root",
+        task="repair",
+        initial_input=[],
+    )
+    task = coordinator.runtimes["child"].task
+    assert task is not None
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert coordinator.statuses["child"] == "crashed"
+    assert coordinator.errors["child"] == "repair crashed"
+    for session in sessions:
+        session.close()
 
 
 @pytest.mark.asyncio

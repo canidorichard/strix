@@ -143,10 +143,7 @@ class ScanFixes:
                 parent_history=[],
             )
         except Exception as error:  # noqa: BLE001 - report launch failure to the scan
-            active = self.tasks.get(finding_id)
-            if active and not active.done():
-                active.cancel()
-                await asyncio.gather(active, return_exceptions=True)
+            await self._cancel_active(finding_id)
             logger.warning("fix.dispatch finding=%s rejected=%s", finding_id, error)
             await self.coordinator.send(
                 self._parent_ctx["agent_id"],
@@ -235,8 +232,7 @@ class ScanFixes:
                 previous.get("reason") or "The previous Fix attempt failed; it was not restarted."
             )
         if running and not running.done():
-            running.cancel()
-            await asyncio.gather(running, return_exceptions=True)
+            await self._cancel_active(finding_id)
         used = int(previous.get("turns", 0))
         if used >= 300:
             raise ValueError("This finding has exhausted its 300-turn Fix allowance.")
@@ -421,10 +417,18 @@ class ScanFixes:
         for task in self.dispatches:
             task.cancel()
         await asyncio.gather(*self.dispatches, return_exceptions=True)
-        for task in self.tasks.values():
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*self.tasks.values(), return_exceptions=True)
+        for finding_id in list(self.tasks):
+            await self._cancel_active(finding_id)
+
+    async def _cancel_active(self, finding_id: str) -> None:
+        task = self.tasks.get(finding_id)
+        if task is None or task.done():
+            return
+        agent_id = self.records.get(finding_id, {}).get("agent_id")
+        if agent_id:
+            await self.coordinator.set_status(agent_id, "stopped")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def _stage_base(self, source: Path) -> str:
         key = hashlib.sha256(str(source).encode()).hexdigest()[:16]

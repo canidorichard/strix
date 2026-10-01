@@ -21,6 +21,7 @@ from openai import (
 )
 
 from strix.config import codex
+from strix.core.agents import TERMINAL_STATUSES, Status
 from strix.core.hooks import (
     BudgetExceededError,
     BudgetPausedError,
@@ -47,7 +48,7 @@ if TYPE_CHECKING:
     from agents.memory import Session, SQLiteSession
     from agents.result import RunResultBase
 
-    from strix.core.agents import AgentCoordinator, Status
+    from strix.core.agents import AgentCoordinator
 
 
 logger = logging.getLogger(__name__)
@@ -1104,6 +1105,8 @@ async def _start_child_runner(
         # spurious "Task exception was never retrieved" warning. The root agent
         # hits the same limit on its next call and tears the scan down.
         result = None
+        terminal_status: Status = "completed"
+        terminal_error = None
         try:
             result = await run_agent_loop(
                 agent=child_agent,
@@ -1119,18 +1122,49 @@ async def _start_child_runner(
                 event_sink=event_sink,
                 hooks=hooks,
             )
+        except asyncio.CancelledError:
+            terminal_status = "stopped"
+            raise
         except BudgetExceededError:
+            terminal_status = "stopped"
             logger.info("child %s stopped after reaching the scan budget limit", child_id)
         except SubagentBudgetReservedError:
+            terminal_status = "stopped"
             logger.info("child %s stopped at the sub-agent budget reserve", child_id)
+        except Exception as error:
+            terminal_status = "crashed"
+            terminal_error = request_log.failure_text(error)
+            raise
         finally:
-            if on_complete is not None:
-                try:
-                    await on_complete(result, session)
-                except Exception:
-                    logger.exception("child %s completion delivery failed", child_id)
-            if not coordinator.is_shutting_down:
-                await _notify_parent_on_exit(coordinator, child_id)
+            try:
+                if on_complete is not None:
+                    try:
+                        await on_complete(result, session)
+                    except asyncio.CancelledError:
+                        terminal_status = "stopped"
+                        raise
+                    except Exception:
+                        logger.exception("child %s completion delivery failed", child_id)
+            finally:
+                await _settle_child_exit(
+                    coordinator,
+                    child_id,
+                    terminal_status,
+                    terminal_error,
+                )
 
     task_handle = asyncio.create_task(_child_loop(), name=f"agent-{name}-{child_id}")
     await coordinator.attach_runtime(child_id, task=task_handle)
+
+
+async def _settle_child_exit(
+    coordinator: AgentCoordinator,
+    child_id: str,
+    terminal_status: Status,
+    terminal_error: str | None,
+) -> None:
+    status = await _agent_status(coordinator, child_id)
+    if status not in TERMINAL_STATUSES:
+        await coordinator.set_status(child_id, terminal_status, error=terminal_error)
+    if not coordinator.is_shutting_down:
+        await _notify_parent_on_exit(coordinator, child_id)
