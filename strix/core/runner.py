@@ -512,6 +512,7 @@ async def run_strix_scan(
         )
         if (
             auto_fix_enabled
+            and scan_config.get("mode") != "pr_review"
             and report_state is not None
             and local_sources
             and (not interactive or local_fix_branches_enabled)

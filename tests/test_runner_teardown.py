@@ -198,8 +198,26 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("interactive", [False, True])
+@pytest.mark.parametrize("is_resume", [False, True])
+@pytest.mark.parametrize(
+    "fix_config",
+    [
+        {"one_click_fixes_enabled": False},
+        {"mode": "pr_review"},
+        {
+            "mode": "pr_review",
+            "one_click_fixes_enabled": True,
+            "auto_fix_enabled": True,
+            "local_fix_branches_enabled": True,
+        },
+    ],
+)
 async def test_disabled_one_click_fixes_skips_fix_runtime(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, interactive: bool
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    interactive: bool,
+    is_resume: bool,
+    fix_config: dict[str, Any],
 ) -> None:
     _wire_runner(monkeypatch, tmp_path)
     events: list[str] = []
@@ -212,6 +230,9 @@ async def test_disabled_one_click_fixes_skips_fix_runtime(
 
         def get_existing_vulnerabilities(self) -> list[Any]:
             return []
+
+        def get_total_llm_cost(self) -> float:
+            return 0.0
 
         def save_run_data(self, **_: Any) -> None:
             events.append("save")
@@ -227,6 +248,23 @@ async def test_disabled_one_click_fixes_skips_fix_runtime(
         assert kwargs["return_on_completion"] is False
         return types.SimpleNamespace(final_output={"scan_completed": True})
 
+    if is_resume:
+        coordinator = AgentCoordinator()
+        await coordinator.register("root", "Root Agent", parent_id=None)
+        await coordinator.set_status("root", "completed")
+        await coordinator.register("repair", "Fix agent", parent_id="root", skills=["fix_task"])
+        await coordinator.register(
+            "reviewer", "Independent fix verifier", parent_id="repair", skills=["fix_task"]
+        )
+        (tmp_path / "agents.json").write_text(json.dumps(await coordinator.snapshot()))
+        (tmp_path / "agents.db").touch()
+
+        async def unexpected_child(**_: Any) -> None:
+            events.append("fix agent resumed")
+            raise AssertionError("Disabled fixes must not respawn repair or reviewer agents")
+
+        monkeypatch.setattr(execution, "spawn_child_agent", unexpected_child)
+
     monkeypatch.setattr(runner, "get_global_report_state", State)
     monkeypatch.setattr(runner, "ScanFixes", Fixes)
     monkeypatch.setattr(runner, "run_agent_loop", root)
@@ -234,7 +272,7 @@ async def test_disabled_one_click_fixes_skips_fix_runtime(
         scan_config={
             "targets": [],
             "scan_mode": "deep",
-            "one_click_fixes_enabled": False,
+            **fix_config,
         },
         scan_id="scan",
         image="image",
