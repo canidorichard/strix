@@ -441,7 +441,9 @@ class ScanFixes:
             for report in self.report_state.get_existing_vulnerabilities()
         }
         for finding_id, record in sorted(self.records.items()):
-            title = titles.get(finding_id, finding_id)
+            if finding_id not in titles:
+                continue
+            title = titles[finding_id]
             if record.get("status") != "done" or not record.get("artifact"):
                 errors.append(
                     {

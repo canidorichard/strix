@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 from typing import TYPE_CHECKING, Any
 
@@ -9,7 +10,7 @@ from agents import ModelSettings
 
 import strix.tools.notes.tools as notes_tools
 import strix.tools.todo.tools as todo_tools
-from strix.core import runner
+from strix.core import execution, runner
 from strix.core.agents import AgentCoordinator
 from strix.runtime import session_manager
 from tests.test_fix_reliability import LocalSandbox
@@ -104,10 +105,15 @@ async def test_a_live_child_is_settled_before_sessions_close(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "interactive,local_branches", [(False, False), (False, True), (True, True)]
+    "interactive,local_branches,is_resume",
+    [(False, False, False), (False, True, False), (True, True, False), (True, True, True)],
 )
 async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, interactive: bool, local_branches: bool
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    interactive: bool,
+    local_branches: bool,
+    is_resume: bool,
 ) -> None:
     _wire_runner(monkeypatch, tmp_path)
     events: list[str] = []
@@ -120,6 +126,9 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
 
         def get_existing_vulnerabilities(self) -> list[Any]:
             return []
+
+        def get_total_llm_cost(self) -> float:
+            return 0.0
 
         def save_run_data(self, **_: Any) -> None:
             events.append("save")
@@ -153,9 +162,22 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
     async def cleanup(*_: Any) -> None:
         events.append("sandbox deleted")
 
+    if is_resume:
+        coordinator = AgentCoordinator()
+        await coordinator.register("root", "Root Agent", parent_id=None)
+        await coordinator.set_status("root", "completed")
+        (tmp_path / "agents.json").write_text(json.dumps(await coordinator.snapshot()))
+        (tmp_path / "agents.db").touch()
+
+        async def unexpected_cycle(*_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("Resume must finish pending fixes without restarting root")
+
+        monkeypatch.setattr(execution, "_run_until_lifecycle", unexpected_cycle)
+
     monkeypatch.setattr(runner, "get_global_report_state", State)
     monkeypatch.setattr(runner, "ScanFixes", Fixes)
-    monkeypatch.setattr(runner, "run_agent_loop", root)
+    if not is_resume:
+        monkeypatch.setattr(runner, "run_agent_loop", root)
     monkeypatch.setattr(session_manager, "cleanup", cleanup)
     await runner.run_strix_scan(
         scan_config={

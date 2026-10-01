@@ -1057,6 +1057,38 @@ async def test_run_agent_loop_seeds_identity_before_first_cycle(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("start_parked", [False, True])
+async def test_completed_interactive_assessment_resumes_without_another_cycle(
+    monkeypatch: pytest.MonkeyPatch, start_parked: bool
+) -> None:
+    coordinator = AgentCoordinator()
+    await coordinator.register("root", "Strix", parent_id=None)
+    await coordinator.set_status("root", "completed")
+    restored = AgentCoordinator()
+    await restored.restore(await coordinator.snapshot())
+
+    async def unexpected_cycle(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("A completed assessment must not call the model on resume")
+
+    monkeypatch.setattr(execution, "_run_until_lifecycle", unexpected_cycle)
+    result = await execution.run_agent_loop(
+        agent=MagicMock(),
+        initial_input=[],
+        run_config=MagicMock(),
+        context={"agent_id": "root", "parent_id": None},
+        max_turns=5,
+        coordinator=restored,
+        agent_id="root",
+        interactive=True,
+        start_parked=start_parked,
+        return_on_completion=True,
+    )
+    assert result is None
+    assert restored.statuses["root"] == "completed"
+    assert not await restored.send("root", {"from": "user", "content": "too late"})
+
+
+@pytest.mark.asyncio
 async def test_interactive_completion_returns_for_finalization_but_waiting_can_resume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

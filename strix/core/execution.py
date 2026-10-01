@@ -251,6 +251,16 @@ async def _run_agent_loop(  # noqa: PLR0912 - interactive completion and cancell
     )
     result: RunResultBase | None = None
 
+    if (
+        interactive
+        and return_on_completion
+        and await _agent_status(coordinator, agent_id) == "completed"
+    ):
+        # A restored assessment can already be final while fixes are pending.
+        # Finalize it without another model cycle or reopening the report.
+        await coordinator.attach_runtime(agent_id, resumable=False)
+        return result
+
     first_cycle_input = await _seed_and_prepare_first_input(
         session, initial_input, start_parked=start_parked
     )

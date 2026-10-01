@@ -228,10 +228,11 @@ async def test_blocked_native_child_has_no_patch(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("withdrawn", [False, True])
 async def test_cancelled_verification_is_reported_without_publishing_a_branch(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, withdrawn
 ):
-    fixes, _, source, _, _, context, sessions = setup(tmp_path, interactive=True)
+    fixes, _, source, _, reports, context, sessions = setup(tmp_path, interactive=True)
     fixes.publish_local_branches = True
     reviewing = asyncio.Event()
 
@@ -251,15 +252,43 @@ async def test_cancelled_verification_is_reported_without_publishing_a_branch(
     )
     assert (await delegate(context))["success"]
     await asyncio.wait_for(reviewing.wait(), timeout=5)
+    if withdrawn:
+        reports.clear()
     await fixes.close()
     branches, errors = await fixes.wait()
     assert branches == []
-    assert "interrupted" in errors[0]["error"]
+    if withdrawn:
+        assert errors == []
+    else:
+        assert "interrupted" in errors[0]["error"]
     assert fixes.records["finding"]["status"] == "stopped"
     assert _git(source, "branch", "--list", "strix/fix-*") == ""
     assert not list((tmp_path / "state/fixes").glob("*/prepared-fix.zip"))
     for session in sessions:
         session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["running", "stopped", "failed", "done"])
+async def test_wait_omits_withdrawn_records_but_keeps_current_fix_errors(tmp_path, status):
+    fixes, _, source, _, _, _, _ = setup(tmp_path)
+    fixes.publish_local_branches = True
+    digest = fixes._finding("finding")[1].digest()
+    fixes.records = {
+        "finding": {"digest": digest, "status": "stopped", "reason": "Tests failed"},
+        "withdrawn": {
+            "digest": digest,
+            "status": status,
+            "artifact": str(tmp_path / "withdrawn.zip"),
+            "reason": "The finding was withdrawn",
+        },
+    }
+
+    branches, errors = await fixes.wait()
+
+    assert branches == []
+    assert errors == [{"finding_id": "finding", "title": "finding", "error": "Tests failed"}]
+    assert _git(source, "branch", "--list", "strix/fix-*") == ""
 
 
 @pytest.mark.asyncio
