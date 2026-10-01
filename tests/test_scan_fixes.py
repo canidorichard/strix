@@ -146,6 +146,44 @@ async def test_native_parallel_fixes_deliver_patches_and_preserve_scan_source(
 
 
 @pytest.mark.asyncio
+async def test_ready_fix_creates_local_branch_without_changing_checkout(tmp_path, monkeypatch):
+    fixes, _, source, _, _, context, sessions = setup(tmp_path)
+    fixes.publish_local_branches = True
+    original_head = _git(source, "rev-parse", "HEAD")
+    original_branch = _git(source, "branch", "--show-current")
+    monkeypatch.setattr(
+        scan_module,
+        "_run_config",
+        lambda env: RunConfig(
+            model=ScriptedModel([*patch(), *suite_commands(), finish("done"), finish("done")]),
+            sandbox=SandboxRunConfig(session=env.session),
+            tracing_disabled=True,
+        ),
+    )
+
+    assert (await delegate(context))["success"]
+    branches, errors = await fixes.wait()
+
+    assert not errors
+    assert len(branches) == 1
+    branch = branches[0]["branch"]
+    assert branch.startswith("strix/fix-unsafe-result-finding-")
+    assert fixes.records["finding"]["branch"] == branch
+    assert _git(source, "branch", "--show-current") == original_branch
+    assert _git(source, "rev-parse", "HEAD") == original_head
+    assert _git(source, "rev-parse", f"{branch}^") == original_head
+    assert _git(source, "status", "--porcelain") == ""
+    assert "return 'safe'" in _git(source, "show", f"{branch}:app.py")
+    assert "test_safe" in _git(source, "show", f"{branch}:tests/test_security.py")
+    repeated, repeated_errors = await fixes.wait()
+    assert repeated_errors == []
+    assert repeated == branches
+    assert _git(source, "show-ref", "--verify", f"refs/heads/{branch}")
+    for session in sessions:
+        session.close()
+
+
+@pytest.mark.asyncio
 async def test_delegation_errors_reach_reporting_agent_before_any_model_call(tmp_path):
     fixes, report, _, _, _, context, _ = setup(tmp_path)
     missing = await delegate(context, "unknown")
@@ -165,6 +203,7 @@ async def test_delegation_errors_reach_reporting_agent_before_any_model_call(tmp
 @pytest.mark.asyncio
 async def test_blocked_native_child_has_no_patch(tmp_path, monkeypatch):
     fixes, _, _, _, _, context, sessions = setup(tmp_path)
+    fixes.publish_local_branches = True
     monkeypatch.setattr(
         scan_module,
         "_run_config",
@@ -175,11 +214,57 @@ async def test_blocked_native_child_has_no_patch(tmp_path, monkeypatch):
         ),
     )
     assert (await delegate(context))["success"]
-    await fixes.wait()
+    branches, errors = await fixes.wait()
+    assert branches == []
+    assert errors == []
     assert fixes.records["finding"]["status"] == "stopped"
     assert not list((tmp_path / "state/fixes").glob("*/prepared-fix.zip"))
     for session in sessions:
         session.close()
+
+
+@pytest.mark.asyncio
+async def test_revised_candidate_does_not_publish_stale_ready_artifact(tmp_path):
+    fixes, report, source, _, _, _, _ = setup(tmp_path)
+    fixes.publish_local_branches = True
+    original_digest = fixes._finding("finding")[1].digest()
+    artifact = tmp_path / "state/fixes/stale/prepared-fix.zip"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"unused")
+    fixes.records["finding"] = {
+        "digest": original_digest,
+        "status": "done",
+        "artifact": str(artifact),
+    }
+    report["fix_candidate"]["security_invariant"] = "Revised attack"
+
+    branches, errors = await fixes.wait()
+
+    assert branches == []
+    assert errors == []
+    assert _git(source, "branch", "--list", "strix/fix-*") == ""
+
+
+@pytest.mark.asyncio
+async def test_local_branch_failure_is_persisted_and_returned(tmp_path):
+    fixes, _, _, _, _, _, _ = setup(tmp_path)
+    fixes.publish_local_branches = True
+    digest = fixes._finding("finding")[1].digest()
+    artifact = tmp_path / "state/fixes/broken/prepared-fix.zip"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"not a zip")
+    fixes.records["finding"] = {
+        "digest": digest,
+        "status": "done",
+        "artifact": str(artifact),
+    }
+
+    branches, errors = await fixes.wait()
+
+    assert branches == []
+    assert len(errors) == 1
+    assert errors[0]["finding_id"] == "finding"
+    assert fixes.records["finding"]["branch_error"] == errors[0]["error"]
 
 
 @pytest.mark.asyncio

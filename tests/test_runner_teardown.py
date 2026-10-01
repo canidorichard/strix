@@ -128,8 +128,9 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
         def start(self, *_: Any) -> None:
             events.append("fixes listening")
 
-        async def wait(self) -> None:
+        async def wait(self) -> tuple[list[Any], list[Any]]:
             events.append("fixes finished")
+            return [], []
 
         async def close(self) -> None:
             events.append("fixes closed")

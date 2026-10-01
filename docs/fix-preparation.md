@@ -7,6 +7,9 @@
 - The agent calls `agent_finish(success=True)` or `agent_finish(success=False)`. The controller enforces **300 total model turns per finding**, including resumed execution and candidate revisions. It does not start a fresh agent after exhaustion.
 - The finish tool checkpoints source before completing. Packaging errors return to the agent for correction; three identical completion errors stop the job with that reason. Untracked dependency/cache paths stay out of the patch; new source and tests stay in. Only a completed, nonempty patch becomes an artifact. Blocked, interrupted, or capped work produces no deliverable patch.
 - Assessment completion publishes the security report. Fixes may continue in the same sandbox; execution and sandbox cleanup finish after all Fix tasks stop. Scan cancellation and the shared model budget also stop fix work.
+- The open-source CLI enables automatic fixes by default for source scans. Use `--no-auto-fix` to disable Fix and verifier agents.
+- After final reconciliation, the CLI creates one local branch for each current approved fix. It does not change the active checkout or push a branch.
+- The final output and `run.json` list each prepared branch. Blocked, rejected, and superseded fixes do not create branches.
 - In the hosted app, successful fixes become available for **user-initiated draft PR creation** on the issue. Incomplete patches are not shown. Internal diagnostic logs and terminal status remain available to operators.
 
 ## Implementation

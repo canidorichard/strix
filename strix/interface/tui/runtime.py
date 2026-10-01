@@ -91,6 +91,8 @@ class GoTuiRuntime:
             "diff_scope": self.args.diff_scope,
             "scan_mode": self.args.scan_mode,
             "non_interactive": False,
+            "auto_fix_enabled": bool(self.args.auto_fix),
+            "local_fix_branches_enabled": bool(self.args.auto_fix),
             "local_sources": self.args.local_sources or [],
             "workspace_files": getattr(self.args, "workspace_files", None) or [],
             "scope_mode": self.args.scope_mode,
@@ -253,6 +255,17 @@ class GoTuiRuntime:
                 mcp_status_sink=self.capture_mcp_status,
             )
             await self._sync_agent_state()
+            if self.report_state is not None:
+                results = self.report_state.scan_results or {}
+                for item in results.get("fix_branches") or []:
+                    self.controller.add_message(
+                        f"Prepared fix branch for {item['title']}: {item['branch']}"
+                    )
+                for item in results.get("fix_branch_errors") or []:
+                    self.controller.add_message(
+                        f"Could not create fix branch for {item['title']}: {item['error']}",
+                        "error",
+                    )
             if self.controller.scan_state == "running":
                 self.controller.scan_state = "stopped"
         except (asyncio.CancelledError, BudgetExceededError):

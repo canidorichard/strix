@@ -500,12 +500,21 @@ async def run_strix_scan(
             )
 
         report_state = get_global_report_state()
-        one_click_fixes_enabled = scan_config.get("one_click_fixes_enabled", True) is not False
+        auto_fix_enabled = (
+            scan_config.get(
+                "auto_fix_enabled",
+                scan_config.get("one_click_fixes_enabled", True),
+            )
+            is not False
+        )
+        local_fix_branches_enabled = (
+            scan_config.get("local_fix_branches_enabled") is True and fix_sink is None
+        )
         if (
-            one_click_fixes_enabled
+            auto_fix_enabled
             and report_state is not None
             and local_sources
-            and not interactive
+            and (not interactive or local_fix_branches_enabled)
         ):
             fixes = ScanFixes(
                 session=sandbox_session,
@@ -517,6 +526,7 @@ async def run_strix_scan(
                 report_state=report_state,
                 event_sink=event_sink,
                 sink=fix_sink,
+                publish_local_branches=local_fix_branches_enabled,
             )
             report_state.defer_completion = True
 
@@ -650,7 +660,9 @@ async def run_strix_scan(
                     logger.exception("Could not publish assessment before fix completion")
             if fixes is not None:
                 report("Assessment complete · Fixes in progress")
-                await fixes.wait()
+                fix_branches, fix_branch_errors = await fixes.wait()
+                report_state.scan_results["fix_branches"] = fix_branches
+                report_state.scan_results["fix_branch_errors"] = fix_branch_errors
             report_state.save_run_data(mark_complete=True)
         return result  # noqa: TRY300
     except BudgetExceededError as exc:

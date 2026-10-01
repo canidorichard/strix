@@ -8,9 +8,12 @@ import hashlib
 import io
 import json
 import logging
+import os
+import re
 import shutil
 import subprocess
 import time
+import zipfile
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from pathlib import Path
@@ -51,6 +54,7 @@ class ScanFixes:
         report_state: Any,
         event_sink: Any = None,
         sink: FixSink | None = None,
+        publish_local_branches: bool = False,
     ) -> None:
         self.session, self.coordinator = session, coordinator
         self.scan_id, self.directory = scan_id, state_dir / "fixes"
@@ -71,6 +75,7 @@ class ScanFixes:
             if s.get("source_path")
         }
         self.hooks, self.event_sink, self.sink = hooks, event_sink, sink
+        self.publish_local_branches = publish_local_branches
         self.report_state = report_state
         self.tasks: dict[str, asyncio.Task[Any]] = {}
         self.dispatches: set[asyncio.Task[Any]] = set()
@@ -406,11 +411,62 @@ class ScanFixes:
                 await self._exec("git", "-C", base, "worktree", "remove", "--force", root)
         shutil.rmtree(directory / "source", ignore_errors=True)
 
-    async def wait(self) -> None:
+    async def wait(self) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         await asyncio.gather(*self.dispatches, return_exceptions=True)
         await self._reconcile()
         self.closed = True
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)
+        if not self.publish_local_branches:
+            return [], []
+
+        branches: list[dict[str, str]] = []
+        errors: list[dict[str, str]] = []
+        for finding_id, record in sorted(self.records.items()):
+            if record.get("status") != "done" or not record.get("artifact"):
+                continue
+            title = finding_id
+            try:
+                report, candidate = self._finding(finding_id)
+                assert candidate.source_identity is not None
+                if candidate.digest() != record.get("digest"):
+                    continue
+                title = str(
+                    report.get("title")
+                    or (candidate.finding.title if candidate.finding else "")
+                    or finding_id
+                )
+                branch = await asyncio.to_thread(
+                    _publish_local_branch,
+                    self.sources[0],
+                    Path(record["artifact"]),
+                    finding_id,
+                    title,
+                    candidate.source_identity.value,
+                    candidate.digest(),
+                )
+                record["branch"] = branch
+                record["source_path"] = str(self.sources[0])
+                record.pop("branch_error", None)
+                branches.append(
+                    {
+                        "finding_id": finding_id,
+                        "title": title,
+                        "branch": branch,
+                        "source_path": str(self.sources[0]),
+                    }
+                )
+            except Exception as error:
+                record["branch_error"] = str(error)
+                errors.append(
+                    {
+                        "finding_id": finding_id,
+                        "title": title,
+                        "error": str(error),
+                    }
+                )
+                logger.exception("Could not publish local Fix branch for %s", finding_id)
+        self._save()
+        return branches, errors
 
     async def close(self) -> None:
         self.closed = True
@@ -485,3 +541,95 @@ def _clone_revision(source: Path, mirror: Path, commit: str) -> None:
         capture_output=True,
         timeout=60,
     )
+
+
+def _publish_local_branch(
+    source: Path,
+    artifact: Path,
+    finding_id: str,
+    title: str,
+    base_commit: str,
+    candidate_digest: str,
+) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40] or "finding"
+    finding = re.sub(r"[^a-zA-Z0-9]+", "", finding_id)[:8].lower() or "finding"
+    branch = f"strix/fix-{slug}-{finding}-{candidate_digest[:8]}"
+    workspace = artifact.parent / "branch-source"
+    shutil.rmtree(workspace, ignore_errors=True)
+    _clone_revision(source, workspace, base_commit)
+    patch = workspace.parent / "changes.patch"
+    try:
+        with zipfile.ZipFile(artifact) as archive:
+            patch.write_bytes(archive.read("changes.patch"))
+        git = shutil.which("git") or "/usr/bin/git"
+        subprocess.run(  # noqa: S603
+            [git, "apply", "--index", "--binary", "--", str(patch)],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        tree = (
+            subprocess.check_output(  # noqa: S603
+                [git, "write-tree"],
+                cwd=workspace,
+                timeout=30,
+            )
+            .decode()
+            .strip()
+        )
+        existing = subprocess.run(  # noqa: S603
+            [git, "rev-parse", "--verify", f"refs/heads/{branch}^{{tree}}"],
+            cwd=source,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if existing.returncode == 0:
+            parent = subprocess.check_output(  # noqa: S603
+                [git, "rev-parse", f"refs/heads/{branch}^"],
+                cwd=source,
+                text=True,
+                timeout=30,
+            ).strip()
+            if existing.stdout.strip() != tree or parent != base_commit:
+                raise RuntimeError(f"Local branch {branch} already contains different changes.")
+            return branch
+
+        subject = " ".join(title.split())[:120] or finding_id
+        message = f"fix: {subject}\n"
+        environment = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Strix",
+            "GIT_AUTHOR_EMAIL": "fixes@strix.ai",
+            "GIT_COMMITTER_NAME": "Strix",
+            "GIT_COMMITTER_EMAIL": "fixes@strix.ai",
+        }
+        commit = subprocess.check_output(  # noqa: S603
+            [git, "commit-tree", tree, "-p", base_commit],
+            cwd=workspace,
+            input=message,
+            text=True,
+            env=environment,
+            timeout=30,
+        ).strip()
+        subprocess.run(  # noqa: S603
+            [
+                git,
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--",
+                str(workspace),
+                f"{commit}:refs/heads/{branch}",
+            ],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        return branch
+    finally:
+        patch.unlink(missing_ok=True)
+        shutil.rmtree(workspace, ignore_errors=True)
