@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from agents import RunContextWrapper, function_tool
 
@@ -173,6 +173,7 @@ _REQUIRED_FIELDS = {
 
 _VALID_FIX_EFFORT = frozenset({"trivial", "low", "medium", "high"})
 _VALID_CONFIDENCE = frozenset({"high", "medium", "low"})
+_VALID_VALIDATION_STATUS = frozenset({"confirmed", "unconfirmed"})
 _MAX_HTTP_EXCHANGE_IDS = 10
 _MAX_HTTP_EXCHANGE_ID_CHARS = 128
 
@@ -552,6 +553,11 @@ _UPDATE_TEXT_FIELDS = (
 )
 
 
+def _normalize_validation_status(value: Any) -> str:
+    """Keep only letters, so stray quotes or spaces from the model still match."""
+    return re.sub(r"[^a-z]", "", str(value).lower())
+
+
 def _collect_update_changes(  # noqa: PLR0912, PLR0915
     fields: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
@@ -566,7 +572,8 @@ def _collect_update_changes(  # noqa: PLR0912, PLR0915
 
     validation_status = fields.get("validation_status")
     if validation_status is not None:
-        if validation_status not in {"confirmed", "unconfirmed"}:
+        validation_status = _normalize_validation_status(validation_status)
+        if validation_status not in _VALID_VALIDATION_STATUS:
             errors.append("validation_status must be confirmed or unconfirmed")
         else:
             changes["validation_status"] = validation_status
@@ -986,7 +993,7 @@ async def _do_create(  # noqa: PLR0911 - explicit validation and persistence out
     confidence_rationale: str | None = None,
     fix_verification: str | None = None,
     fix_pr_body: str | None = None,
-    validation_status: Literal["confirmed", "unconfirmed"] = "unconfirmed",
+    validation_status: str = "unconfirmed",
     fix_candidate_blocker: FixCandidateBlocker | None = None,
     agent_id: str | None = None,
     agent_name: str | None = None,
@@ -1021,6 +1028,10 @@ async def _do_create(  # noqa: PLR0911 - explicit validation and persistence out
         errors.append(
             f"Invalid fix_effort: {fix_effort!r}. Must be one of: {sorted(_VALID_FIX_EFFORT)}"
         )
+
+    validation_status = _normalize_validation_status(validation_status)
+    if validation_status not in _VALID_VALIDATION_STATUS:
+        errors.append("validation_status must be confirmed or unconfirmed")
 
     errors.extend(_validate_cvss_breakdown(cvss_breakdown))
 
@@ -1198,7 +1209,7 @@ async def create_vulnerability_report(
     confidence_rationale: str | None = None,
     fix_verification: str | None = None,
     fix_pr_body: str | None = None,
-    validation_status: Literal["confirmed", "unconfirmed"] = "unconfirmed",
+    validation_status: str = "unconfirmed",
     fix_candidate_blocker: FixCandidateBlocker | None = None,
 ) -> str:
     """File a vulnerability report — one report per fully-verified finding.
@@ -1665,7 +1676,7 @@ async def update_vulnerability_report(
     http_exchange_ids: list[str] | None = None,
     fix_verification: str | None = None,
     fix_pr_body: str | None = None,
-    validation_status: Literal["confirmed", "unconfirmed"] | None = None,
+    validation_status: str | None = None,
     fix_candidate_blocker: FixCandidateBlocker | None = None,
     contextual_cvss_reasoning: str | None = None,
 ) -> str:

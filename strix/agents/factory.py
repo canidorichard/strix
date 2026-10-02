@@ -286,6 +286,37 @@ def _with_strictness(tool: FunctionTool, strict_schemas: bool) -> FunctionTool:
     return dataclasses.replace(tool, strict_json_schema=False)
 
 
+_VALIDATION_STATUS_ARG_DOC = re.compile(r"\n *validation_status:.*?(?=\n *\w+:|\Z)", re.DOTALL)
+_FIX_AGENTS_PARAGRAPH = re.compile(r"\n\nFix agents \(marked fix_task\).*?(?=\n\n)", re.DOTALL)
+
+
+def _without_auto_fix_guidance(tool: Tool) -> Tool:
+    """Hide what only applies when Fix agents run, for scans with auto-fix off.
+
+    Returns a copy so the shared tool singletons keep the guidance.
+    """
+    if not isinstance(tool, FunctionTool):
+        return tool
+    if tool.name == finish_scan.name:
+        return dataclasses.replace(
+            tool, description=_FIX_AGENTS_PARAGRAPH.sub("", tool.description)
+        )
+    if tool.name not in {create_vulnerability_report.name, update_vulnerability_report.name}:
+        return tool
+    schema = tool.params_json_schema
+    return dataclasses.replace(
+        tool,
+        description=_VALIDATION_STATUS_ARG_DOC.sub("", tool.description),
+        params_json_schema={
+            **schema,
+            "properties": {
+                k: v for k, v in schema["properties"].items() if k != "validation_status"
+            },
+            "required": [k for k in schema.get("required", []) if k != "validation_status"],
+        },
+    )
+
+
 def _function_tool_with_error_result(tool: FunctionTool) -> FunctionTool:
     invoke_tool = tool.on_invoke_tool
 
@@ -673,6 +704,7 @@ def build_strix_agent(
     is_whitebox: bool = False,
     is_diff_scoped: bool = False,
     interactive: bool = False,
+    auto_fix: bool = True,
     chat_completions_tools: bool = False,
     strict_tool_schemas: bool = True,
     system_prompt_context: dict[str, Any] | None = None,
@@ -683,6 +715,9 @@ def build_strix_agent(
     """Build a SandboxAgent for either root or child use.
 
     Args:
+        auto_fix: Whether this scan starts Fix agents for confirmed findings.
+            Off hides ``validation_status`` and Fix agent guidance from the
+            tools and prompt.
         chat_completions_tools: Wrap SDK custom tools as function tools
             when the selected backend cannot accept Responses custom tools.
         strict_tool_schemas: Send function tools as strict-schema tools. Off
@@ -704,6 +739,7 @@ def build_strix_agent(
             is_root=is_root,
             is_diff_scoped=is_diff_scoped,
             interactive=interactive,
+            auto_fix=auto_fix,
             system_prompt_context=system_prompt_context,
         )
 
@@ -717,6 +753,8 @@ def build_strix_agent(
     else:
         tools = [*selected_tools, *agent_tools, agent_finish]
     _ensure_unique_tool_names(tools)
+    if not auto_fix:
+        tools = [_without_auto_fix_guidance(tool) for tool in tools]
     tools = [
         _with_bounded_result(_with_strictness(_with_coerced_arguments(tool), strict_tool_schemas))
         if isinstance(tool, FunctionTool)
@@ -763,6 +801,7 @@ def make_child_factory(
     is_whitebox: bool = False,
     is_diff_scoped: bool = False,
     interactive: bool = False,
+    auto_fix: bool = True,
     chat_completions_tools: bool = False,
     strict_tool_schemas: bool = True,
     system_prompt_context: dict[str, Any] | None = None,
@@ -783,6 +822,7 @@ def make_child_factory(
             is_whitebox=is_whitebox,
             is_diff_scoped=is_diff_scoped,
             interactive=interactive,
+            auto_fix=auto_fix,
             chat_completions_tools=chat_completions_tools,
             strict_tool_schemas=strict_tool_schemas,
             system_prompt_context=system_prompt_context,

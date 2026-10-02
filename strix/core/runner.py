@@ -152,6 +152,7 @@ def _compose_root_instructions_override(
     is_whitebox: bool,
     is_diff_scoped: bool,
     interactive: bool,
+    auto_fix: bool,
     system_prompt_context: dict[str, Any],
 ) -> str | None:
     if root_instructions_override is None:
@@ -164,6 +165,7 @@ def _compose_root_instructions_override(
         is_root=True,
         is_diff_scoped=is_diff_scoped,
         interactive=interactive,
+        auto_fix=auto_fix,
         system_prompt_context=system_prompt_context,
         include_scope=False,
     )
@@ -465,6 +467,14 @@ async def run_strix_scan(
         except Exception:
             logger.exception("Failed to configure user MCP servers; continuing without them")
 
+        report_state = get_global_report_state()
+        auto_fix = bool(
+            scan_config.get("auto_fix_enabled", True) is not False
+            and scan_config.get("mode") != "pr_review"
+            and report_state is not None
+            and local_sources
+        )
+
         root_context = _merge_root_prompt_context(scope_context, extra_system_prompt_context)
         root_instructions = _compose_root_instructions_override(
             root_instructions_override,
@@ -473,6 +483,7 @@ async def run_strix_scan(
             is_whitebox=is_whitebox,
             is_diff_scoped=is_diff_scoped,
             interactive=interactive,
+            auto_fix=auto_fix,
             system_prompt_context=root_context,
         )
 
@@ -484,6 +495,7 @@ async def run_strix_scan(
             is_whitebox=is_whitebox,
             is_diff_scoped=is_diff_scoped,
             interactive=interactive,
+            auto_fix=auto_fix,
             chat_completions_tools=chat_completions_tools,
             strict_tool_schemas=strict_tool_schemas,
             system_prompt_context=root_context,
@@ -499,13 +511,7 @@ async def run_strix_scan(
                 skills=skills,
             )
 
-        report_state = get_global_report_state()
-        if (
-            scan_config.get("auto_fix_enabled", True) is not False
-            and scan_config.get("mode") != "pr_review"
-            and report_state is not None
-            and local_sources
-        ):
+        if auto_fix and report_state is not None and local_sources:
             fixes = ScanFixes(
                 session=sandbox_session,
                 coordinator=coordinator,
@@ -524,6 +530,7 @@ async def run_strix_scan(
             is_whitebox=is_whitebox,
             is_diff_scoped=is_diff_scoped,
             interactive=interactive,
+            auto_fix=auto_fix,
             chat_completions_tools=chat_completions_tools,
             strict_tool_schemas=strict_tool_schemas,
             system_prompt_context=scope_context,

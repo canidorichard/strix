@@ -93,6 +93,7 @@ def render_system_prompt(
     is_root: bool = False,
     is_diff_scoped: bool = False,
     interactive: bool = False,
+    auto_fix: bool = True,
     system_prompt_context: dict[str, Any] | None = None,
     include_scope: bool = True,
 ) -> str:
@@ -143,6 +144,7 @@ def render_system_prompt(
             requested_skill_names=[name for name in skill_content if name not in shared],
             available_skills=get_available_skills(),
             interactive=interactive,
+            auto_fix=auto_fix,
             is_root=is_root,
             system_prompt_context=system_prompt_context or {},
             include_scope=include_scope,

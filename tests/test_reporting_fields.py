@@ -1726,6 +1726,57 @@ async def test_evidence_only_update_reports_proxy_outage_as_retryable(
     assert report_state.vulnerability_reports[0] == original
 
 
+@pytest.mark.parametrize("raw_status", ['"confirmed"', " Confirmed. ", "'confirmed'"])
+async def test_update_accepts_validation_status_with_stray_characters(
+    report_state: ReportState, raw_status: str
+) -> None:
+    """Some models wrap the value in quotes; that must not fail the call."""
+    _seed_weak_report(report_state)
+    ctx = ToolContext(
+        context={"agent_id": "aaaa1111"},
+        tool_name="update_vulnerability_report",
+        tool_call_id="call-1",
+        tool_arguments="{}",
+    )
+    raw = await update_vulnerability_report.on_invoke_tool(
+        ctx,
+        json.dumps(
+            {
+                "report_id": "vuln-0009",
+                "update_reason": "The dynamic PoC proved the issue.",
+                "validation_status": raw_status,
+            }
+        ),
+    )
+
+    assert json.loads(raw)["success"] is True
+    assert report_state.vulnerability_reports[0]["validation_status"] == "confirmed"
+
+
+async def test_update_rejects_unknown_validation_status(report_state: ReportState) -> None:
+    _seed_weak_report(report_state)
+    ctx = ToolContext(
+        context={"agent_id": "aaaa1111"},
+        tool_name="update_vulnerability_report",
+        tool_call_id="call-1",
+        tool_arguments="{}",
+    )
+    raw = await update_vulnerability_report.on_invoke_tool(
+        ctx,
+        json.dumps(
+            {
+                "report_id": "vuln-0009",
+                "update_reason": "Unsure.",
+                "validation_status": "maybe",
+            }
+        ),
+    )
+
+    result = json.loads(raw)
+    assert result["success"] is False
+    assert "validation_status must be confirmed or unconfirmed" in json.dumps(result)
+
+
 def test_update_reports_persistence_failure_as_tool_error(report_state: ReportState) -> None:
     _seed_weak_report(report_state)
     original = dict(report_state.vulnerability_reports[0])
