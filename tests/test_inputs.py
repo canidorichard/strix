@@ -432,31 +432,8 @@ def test_user_headers_override_openrouter_attribution() -> None:
     assert headers["HTTP-Referer"] == "https://strix.ai"
 
 
-def test_reasoning_effort_none_sent_explicitly_on_chat_completions() -> None:
-    # Absent the field, OpenAI's chat completions reason at a default effort,
-    # which the newer models reject together with function tools.
-    for model in ("gpt-daybreak-blue-latest", "gpt-5.6-sol", "openai/gpt-5.4"):
-        chat = make_model_settings("none", model_name=model, api_type="chat_completions")
-        assert chat.reasoning is not None, model
-        assert chat.reasoning.effort == "none"
-
-
-def test_reasoning_effort_none_omitted_off_chat_completions() -> None:
-    assert (
-        make_model_settings("none", model_name="gpt-5.6-sol", api_type="responses").reasoning
-        is None
-    )
-    assert make_model_settings("none", model_name="gpt-5.6-sol", api_type=None).reasoning is None
-    litellm_route = make_model_settings(
-        "none", model_name="litellm/gpt-5.6-sol", api_type="chat_completions"
-    )
-    assert litellm_route.reasoning is None
-
-
-def test_reasoning_effort_sent_as_configured_on_every_route() -> None:
-    for api_type in ("chat_completions", "responses", None):
-        settings = make_model_settings(
-            "high", model_name="gpt-daybreak-blue-latest", api_type=api_type
-        )
-        assert settings.reasoning is not None, api_type
-        assert settings.reasoning.effort == "high"
+def test_reasoning_effort_sent_as_configured_and_none_omitted() -> None:
+    assert make_model_settings("none", model_name="gpt-5.6-sol").reasoning is None
+    settings = make_model_settings("high", model_name="gpt-daybreak-blue-latest")
+    assert settings.reasoning is not None
+    assert settings.reasoning.effort == "high"

@@ -377,7 +377,6 @@ async def run_strix_scan(
             request_timeout=settings.llm.timeout,
             prompt_cache=settings.llm.prompt_cache,
             extra_headers=settings.llm.extra_headers,
-            api_type="chat_completions" if chat_completions_tools else "responses",
         )
         run_config = RunConfig(
             model=resolved_model,

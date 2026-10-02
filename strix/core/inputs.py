@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
-    from strix.config.settings import ApiType, ReasoningEffort
+    from strix.config.settings import ReasoningEffort
 
 
 def _accepts_required_tool_choice(model_name: str | None) -> bool:
@@ -257,9 +257,7 @@ def make_model_settings(
     prompt_cache: bool = True,
     extra_headers: dict[str, str] | None = None,
     has_tools: bool = True,
-    api_type: ApiType | None = None,
 ) -> ModelSettings:
-    """``api_type`` is the resolved SDK-native OpenAI route, when known."""
     headers = _request_headers(model_name, extra_headers)
     model_settings = ModelSettings(
         parallel_tool_calls=False if has_tools else None,
@@ -268,13 +266,12 @@ def make_model_settings(
         extra_args=request_timeout_extra_args(request_timeout),
         extra_headers=headers,
     )
-    if reasoning_effort is not None and model_supports_reasoning(model_name):
-        if reasoning_effort != "none":
-            model_settings = model_settings.resolve(_reasoning_settings(reasoning_effort))
-        elif _explicit_none_required(model_name, api_type):
-            model_settings = model_settings.resolve(
-                ModelSettings(reasoning=Reasoning(effort="none"))
-            )
+    if (
+        reasoning_effort is not None
+        and reasoning_effort != "none"
+        and model_supports_reasoning(model_name)
+    ):
+        model_settings = model_settings.resolve(_reasoning_settings(reasoning_effort))
     if force_required_tool_choice and _accepts_required_tool_choice(model_name):
         model_settings = model_settings.resolve(ModelSettings(tool_choice="required"))
 
@@ -286,14 +283,6 @@ def make_model_settings(
             ),
         )
     return model_settings
-
-
-def _explicit_none_required(model_name: str, api_type: ApiType | None) -> bool:
-    """OpenAI's chat completions reason at a default effort when the field is
-    absent, and the newer reasoning models reject function tools at any effort
-    but ``none``, so ``none`` has to be sent, not left out. LiteLLM's own route
-    maps the field per provider and is left alone."""
-    return api_type == "chat_completions" and not routes_through_litellm(model_name)
 
 
 def _request_headers(

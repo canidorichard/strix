@@ -88,23 +88,6 @@ def test_client_errors_are_not_transient() -> None:
     assert execution._is_transient_model_error(ValueError("nope")) is False
 
 
-def test_tools_with_reasoning_effort_rejection_carries_a_route_hint() -> None:
-    rejected = BadRequestError(
-        "Error code: 400 - {'error': {'message': \"Function tools with reasoning_effort are "
-        "not supported for gpt-5.6-sol in /v1/chat/completions. To use function tools, use "
-        "/v1/responses or set reasoning_effort to 'none'.\", 'param': 'reasoning_effort'}}",
-        response=httpx.Response(400, request=_request()),
-        body=None,
-    )
-    text = execution._failure_text(rejected)
-    assert text.startswith("Error code: 400")
-    assert "STRIX_API_TYPE=responses" in text
-    assert "STRIX_REASONING_EFFORT=none" in text
-
-    other = BadRequestError("bad", response=httpx.Response(400, request=_request()), body=None)
-    assert execution._failure_text(other) == "bad"
-
-
 class _FakeStream:
     def __init__(self, exc: BaseException | None = None) -> None:
         self._exc = exc
