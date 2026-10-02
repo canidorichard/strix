@@ -106,7 +106,12 @@ async def test_a_live_child_is_settled_before_sessions_close(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "interactive,local_branches,is_resume",
-    [(False, False, False), (False, True, False), (True, True, False), (True, True, True)],
+    [
+        (interactive, local_branches, resume)
+        for interactive in (False, True)
+        for local_branches in (False, True)
+        for resume in ((False, True) if interactive else (False,))
+    ],
 )
 async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
     monkeypatch: pytest.MonkeyPatch,
@@ -135,7 +140,6 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
 
     class Fixes:
         def __init__(self, **options: Any) -> None:
-            assert options["publish_local_branches"] is local_branches
             assert (options["sink"] is not None) is not local_branches
 
         def start(self, *_: Any) -> None:
@@ -183,7 +187,6 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
         scan_config={
             "targets": [],
             "scan_mode": "deep",
-            "local_fix_branches_enabled": local_branches,
         },
         scan_id="scan",
         image="image",
@@ -202,17 +205,15 @@ async def test_assessment_publishes_before_fixes_end_and_sandbox_teardown(
 @pytest.mark.parametrize(
     "fix_config",
     [
-        {"one_click_fixes_enabled": False},
+        {"auto_fix_enabled": False},
         {"mode": "pr_review"},
         {
             "mode": "pr_review",
-            "one_click_fixes_enabled": True,
             "auto_fix_enabled": True,
-            "local_fix_branches_enabled": True,
         },
     ],
 )
-async def test_disabled_one_click_fixes_skips_fix_runtime(
+async def test_disabled_auto_fix_skips_fix_runtime(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     interactive: bool,

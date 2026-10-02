@@ -127,7 +127,9 @@ async def test_native_parallel_fixes_deliver_patches_and_preserve_scan_source(
     assert first["success"] and second["success"], (first, second)
     duplicate = await delegate(context)
     assert duplicate["agent_id"] == first["agent_id"]
-    await fixes.wait()
+    branches, errors = await fixes.wait()
+    assert branches == errors == []
+    assert _git(source, "branch", "--list", "strix/fix-*") == ""
     assert len(models) == 2
     assert all(record["status"] == "done" for record in fixes.records.values()), fixes.records
     assert all(Path(record["artifact"]).exists() for record in fixes.records.values())
@@ -150,7 +152,6 @@ async def test_ready_fix_creates_local_branch_without_changing_checkout(
     tmp_path, monkeypatch, interactive
 ):
     fixes, _, source, _, _, context, sessions = setup(tmp_path, interactive=interactive)
-    fixes.publish_local_branches = True
     original_head = _git(source, "rev-parse", "HEAD")
     original_branch = _git(source, "branch", "--show-current")
     monkeypatch.setattr(
@@ -205,7 +206,6 @@ async def test_delegation_errors_reach_reporting_agent_before_any_model_call(tmp
 @pytest.mark.asyncio
 async def test_blocked_native_child_has_no_patch(tmp_path, monkeypatch):
     fixes, _, _, _, _, context, sessions = setup(tmp_path)
-    fixes.publish_local_branches = True
     monkeypatch.setattr(
         scan_module,
         "_run_config",
@@ -233,7 +233,6 @@ async def test_cancelled_verification_is_reported_without_publishing_a_branch(
     tmp_path, monkeypatch, withdrawn
 ):
     fixes, _, source, _, reports, context, sessions = setup(tmp_path, interactive=True)
-    fixes.publish_local_branches = True
     reviewing = asyncio.Event()
 
     async def verify(*_args):
@@ -272,7 +271,6 @@ async def test_cancelled_verification_is_reported_without_publishing_a_branch(
 @pytest.mark.parametrize("status", ["running", "stopped", "failed", "done"])
 async def test_wait_omits_withdrawn_records_but_keeps_current_fix_errors(tmp_path, status):
     fixes, _, source, _, _, _, _ = setup(tmp_path)
-    fixes.publish_local_branches = True
     digest = fixes._finding("finding")[1].digest()
     fixes.records = {
         "finding": {"digest": digest, "status": "stopped", "reason": "Tests failed"},
@@ -294,7 +292,6 @@ async def test_wait_omits_withdrawn_records_but_keeps_current_fix_errors(tmp_pat
 @pytest.mark.asyncio
 async def test_dispatch_failure_is_reported_before_an_agent_exists(tmp_path, monkeypatch):
     fixes, _, _, _, _, context, _ = setup(tmp_path)
-    fixes.publish_local_branches = True
     fixes._parent_ctx = context.context
     monkeypatch.setattr(fixes, "spawn", AsyncMock(side_effect=RuntimeError("Source unavailable")))
     await fixes._dispatch("finding")
@@ -306,7 +303,6 @@ async def test_dispatch_failure_is_reported_before_an_agent_exists(tmp_path, mon
 @pytest.mark.asyncio
 async def test_revised_candidate_does_not_publish_stale_ready_artifact(tmp_path, monkeypatch):
     fixes, report, source, _, _, _, _ = setup(tmp_path)
-    fixes.publish_local_branches = True
     original_digest = fixes._finding("finding")[1].digest()
     artifact = tmp_path / "state/fixes/stale/prepared-fix.zip"
     artifact.parent.mkdir(parents=True)
@@ -330,7 +326,6 @@ async def test_revised_candidate_does_not_publish_stale_ready_artifact(tmp_path,
 @pytest.mark.asyncio
 async def test_local_branch_failure_is_persisted_and_returned(tmp_path):
     fixes, _, _, _, _, _, _ = setup(tmp_path)
-    fixes.publish_local_branches = True
     digest = fixes._finding("finding")[1].digest()
     artifact = tmp_path / "state/fixes/broken/prepared-fix.zip"
     artifact.parent.mkdir(parents=True)

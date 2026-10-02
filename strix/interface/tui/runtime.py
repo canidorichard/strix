@@ -92,7 +92,6 @@ class GoTuiRuntime:
             "scan_mode": self.args.scan_mode,
             "non_interactive": False,
             "auto_fix_enabled": bool(self.args.auto_fix),
-            "local_fix_branches_enabled": bool(self.args.auto_fix),
             "local_sources": self.args.local_sources or [],
             "workspace_files": getattr(self.args, "workspace_files", None) or [],
             "scope_mode": self.args.scope_mode,

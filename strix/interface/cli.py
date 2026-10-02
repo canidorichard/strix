@@ -94,7 +94,6 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
         "scan_mode": scan_mode,
         "non_interactive": bool(getattr(args, "non_interactive", False)),
         "auto_fix_enabled": bool(args.auto_fix),
-        "local_fix_branches_enabled": bool(args.auto_fix),
         "local_sources": getattr(args, "local_sources", None) or [],
         "workspace_files": getattr(args, "workspace_files", None) or [],
         "scope_mode": getattr(args, "scope_mode", "auto"),

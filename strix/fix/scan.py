@@ -54,7 +54,6 @@ class ScanFixes:
         report_state: Any,
         event_sink: Any = None,
         sink: FixSink | None = None,
-        publish_local_branches: bool = False,
     ) -> None:
         self.session, self.coordinator = session, coordinator
         self.scan_id, self.directory = scan_id, state_dir / "fixes"
@@ -77,7 +76,6 @@ class ScanFixes:
             if s.get("source_path")
         }
         self.hooks, self.event_sink, self.sink = hooks, event_sink, sink
-        self.publish_local_branches = publish_local_branches
         self.report_state = report_state
         self.tasks: dict[str, asyncio.Task[Any]] = {}
         self.dispatches: set[asyncio.Task[Any]] = set()
@@ -152,7 +150,7 @@ class ScanFixes:
             )
         except Exception as error:  # noqa: BLE001 - report launch failure to the scan
             await self._cancel_active(finding_id)
-            if candidate is not None and self.publish_local_branches:
+            if candidate is not None and self.sink is None:
                 record = self.records.setdefault(finding_id, {})
                 record.update(digest=candidate.digest(), status="stopped", reason=str(error))
                 self._save()
@@ -431,7 +429,7 @@ class ScanFixes:
         await self._reconcile()
         self.closed = True
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)
-        if not self.publish_local_branches:
+        if self.sink is not None:
             return [], []
 
         branches: list[dict[str, str]] = []
