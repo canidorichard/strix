@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from openai import AsyncOpenAI
     from openai.types.responses.response_prompt_param import ResponsePromptParam
 
-    from strix.config.settings import LlmSettings, ReasoningEffort, Settings
+    from strix.config.settings import ApiType, LlmSettings, ReasoningEffort, Settings
 
 
 logger = logging.getLogger(__name__)
@@ -649,12 +649,68 @@ def configure_sdk_model_defaults(settings: Settings) -> None:
     if llm.api_base:
         os.environ["OPENAI_BASE_URL"] = llm.api_base
         _configure_litellm_default("api_base", llm.api_base)
-    api_type = llm.api_type
-    if api_type is None:
-        api_type = "chat_completions" if llm.api_base else "responses"
-
+    api_type = resolve_api_type(llm.model or "", settings)
+    logger.info("OpenAI API route: %s", api_type)
     set_default_openai_api(api_type)
     _configure_extra_headers(llm)
+
+
+_OPENAI_HOSTS = frozenset({"api.openai.com"})
+_CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions"
+
+
+def resolve_api_type(model_name: str, settings: Settings) -> ApiType:
+    """The SDK-native OpenAI route for ``model_name``: Responses or chat completions.
+
+    An explicit ``STRIX_API_TYPE`` wins. Without a base URL the request goes to
+    OpenAI itself, where every model is served by the Responses API. With a base
+    URL the model decides, not the URL: a model whose catalog entry lists no
+    ``/v1/chat/completions`` endpoint cannot be reached there at all, and
+    api.openai.com behind a base URL is still OpenAI. Anything else is an
+    OpenAI-compatible gateway whose common denominator is chat completions.
+    """
+    if settings.llm.api_type is not None:
+        return settings.llm.api_type
+    api_base = (settings.llm.api_base or "").strip()
+    if not api_base or _is_openai_host(api_base):
+        return "responses"
+    endpoints = _catalog_supported_endpoints(model_name)
+    if endpoints and _CHAT_COMPLETIONS_ENDPOINT not in endpoints:
+        return "responses"
+    return "chat_completions"
+
+
+def _is_openai_host(api_base: str) -> bool:
+    from urllib.parse import urlsplit
+
+    return (urlsplit(api_base).hostname or "").lower() in _OPENAI_HOSTS
+
+
+def _catalog_supported_endpoints(model_name: str) -> list[str]:
+    entry = _catalog_entry(model_name)
+    endpoints = entry.get("supported_endpoints") if entry else None
+    return [str(e) for e in endpoints] if isinstance(endpoints, list) else []
+
+
+def chat_completions_accept_reasoning_effort(model_name: str) -> bool:
+    """Whether OpenAI's chat completions take ``reasoning_effort`` for ``model_name``.
+
+    Some reasoning models accept the parameter on the Responses API only and
+    reject a chat completion carrying it (with function tools). LiteLLM's
+    parameter map records which; a model it does not know is given the benefit
+    of the doubt.
+    """
+    if not _catalog_entry(model_name):
+        return True
+    import litellm
+
+    try:
+        params = litellm.get_supported_openai_params(
+            _bare_openai_name(model_name), custom_llm_provider="openai"
+        )
+    except Exception:  # noqa: BLE001 - an unmapped model keeps the parameter
+        return True
+    return "reasoning_effort" in (params or [])
 
 
 def _mirror_api_key_to_provider_env(model_name: str | None, api_key: str) -> None:
@@ -859,10 +915,8 @@ def uses_chat_completions_tool_schema(model_name: str, settings: Settings) -> bo
     model = model_name.strip().lower()
     if "/" in model and not model.startswith("openai/"):
         return True
-    if settings.llm.api_type is not None:
-        return settings.llm.api_type == "chat_completions"
-    if settings.llm.api_base:
-        return True
+    if settings.llm.api_type is not None or settings.llm.api_base:
+        return resolve_api_type(model_name, settings) == "chat_completions"
     return not model_supports_reasoning(model_name)
 
 
@@ -879,17 +933,27 @@ def supports_strict_tool_schemas(model_name: str) -> bool:
 
 
 def model_supports_reasoning(model_name: str) -> bool:
-    import litellm
+    entry = _catalog_entry(model_name)
+    return bool(entry and entry.get("supports_reasoning"))
 
+
+def _bare_openai_name(model_name: str) -> str:
     name = model_name.strip().lower()
     for prefix in ("litellm/", "any-llm/", "openai/"):
         if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
+            return name[len(prefix) :]
+    return name
+
+
+def _catalog_entry(model_name: str) -> dict[str, Any] | None:
+    """LiteLLM's cost-map entry for the model, looked up as it would route it."""
+    import litellm
+
+    name = _bare_openai_name(model_name)
     entry = litellm.model_cost.get(name)
     if entry is None and "/" in name:
         entry = litellm.model_cost.get(name.rsplit("/", 1)[1])
-    return bool(entry and entry.get("supports_reasoning"))
+    return entry if isinstance(entry, dict) else None
 
 
 def is_known_openai_bare_model(model_name: str) -> bool:

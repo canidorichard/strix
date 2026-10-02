@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from agents.model_settings import ModelSettings
@@ -12,6 +13,7 @@ from strix.config.models import (
     DEFAULT_MODEL_RETRY,
     OPENROUTER_ATTRIBUTION_HEADERS,
     bedrock_route_supports_prompt_caching,
+    chat_completions_accept_reasoning_effort,
     is_bedrock_route,
     is_claude_model,
     is_known_openai_bare_model,
@@ -23,8 +25,11 @@ from strix.config.models import (
 from strix.core.sessions import scrub_images_from_items
 
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
-    from strix.config.settings import ReasoningEffort
+    from strix.config.settings import ApiType, ReasoningEffort
 
 
 def _accepts_required_tool_choice(model_name: str | None) -> bool:
@@ -253,7 +258,10 @@ def make_model_settings(
     prompt_cache: bool = True,
     extra_headers: dict[str, str] | None = None,
     has_tools: bool = True,
+    api_type: ApiType | None = None,
 ) -> ModelSettings:
+    """``api_type`` is the resolved SDK-native OpenAI route, when known; it decides
+    whether a reasoning model can be sent ``reasoning_effort`` at all."""
     headers = _request_headers(model_name, extra_headers)
     model_settings = ModelSettings(
         parallel_tool_calls=False if has_tools else None,
@@ -267,9 +275,16 @@ def make_model_settings(
         and reasoning_effort != "none"
         and model_supports_reasoning(model_name)
     ):
-        model_settings = model_settings.resolve(
-            _reasoning_settings(reasoning_effort),
-        )
+        if _route_rejects_reasoning_effort(model_name, api_type):
+            logger.info(
+                "Omitting reasoning_effort=%s: %s does not accept it on chat completions",
+                reasoning_effort,
+                model_name,
+            )
+        else:
+            model_settings = model_settings.resolve(
+                _reasoning_settings(reasoning_effort),
+            )
     if force_required_tool_choice and _accepts_required_tool_choice(model_name):
         model_settings = model_settings.resolve(ModelSettings(tool_choice="required"))
 
@@ -281,6 +296,14 @@ def make_model_settings(
             ),
         )
     return model_settings
+
+
+def _route_rejects_reasoning_effort(model_name: str, api_type: ApiType | None) -> bool:
+    """LiteLLM drops unsupported parameters itself on its own route; the
+    SDK-native chat completions route sends whatever it is given."""
+    if api_type != "chat_completions" or routes_through_litellm(model_name):
+        return False
+    return not chat_completions_accept_reasoning_effort(model_name)
 
 
 def _request_headers(

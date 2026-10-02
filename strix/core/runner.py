@@ -22,6 +22,7 @@ from strix.config import load_settings
 from strix.config.models import (
     StrixProvider,
     configure_sdk_model_defaults,
+    resolve_api_type,
     supports_strict_tool_schemas,
     uses_chat_completions_tool_schema,
 )
@@ -372,6 +373,7 @@ async def run_strix_scan(
             request_timeout=settings.llm.timeout,
             prompt_cache=settings.llm.prompt_cache,
             extra_headers=settings.llm.extra_headers,
+            api_type=resolve_api_type(resolved_model, settings),
         )
         run_config = RunConfig(
             model=resolved_model,

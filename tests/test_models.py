@@ -16,6 +16,7 @@ from strix.config.models import (
     _TurnGuardModel,
     configure_sdk_model_defaults,
     request_timeout_extra_args,
+    resolve_api_type,
     routes_through_litellm,
     supports_strict_tool_schemas,
     uses_chat_completions_tool_schema,
@@ -138,3 +139,66 @@ def test_api_type_overrides_the_api_base_route(
     while isinstance(model, _NonStreamingModel | _TurnGuardModel | RequestLoggingModel):
         model = model._inner
     assert isinstance(model, expected)
+
+
+def _settings(monkeypatch: pytest.MonkeyPatch, model: str, api_base: str | None) -> Settings:
+    monkeypatch.setenv("STRIX_LLM", model)
+    monkeypatch.delenv("STRIX_API_TYPE", raising=False)
+    for name in ("LLM_API_BASE", "OPENAI_API_BASE", "OPENAI_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    if api_base is not None:
+        monkeypatch.setenv("LLM_API_BASE", api_base)
+    return Settings()
+
+
+def test_resolve_api_type_without_base_url_is_responses(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert resolve_api_type("gpt-5", _settings(monkeypatch, "gpt-5", None)) == "responses"
+    assert resolve_api_type("gpt-4o", _settings(monkeypatch, "gpt-4o", None)) == "responses"
+
+
+def test_resolve_api_type_gateway_defaults_to_chat_completions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch, "gpt-5.6-sol", "https://gateway.example/v1")
+    assert resolve_api_type("gpt-5.6-sol", settings) == "chat_completions"
+    assert resolve_api_type("my-private-model", settings) == "chat_completions"
+
+
+def test_resolve_api_type_responses_only_model_ignores_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model LiteLLM lists on /v1/responses alone cannot be served by chat completions."""
+    settings = _settings(monkeypatch, "gpt-daybreak-blue-latest", "https://gateway.example/v1")
+    assert resolve_api_type("gpt-daybreak-blue-latest", settings) == "responses"
+    assert resolve_api_type("openai/gpt-daybreak-blue-latest", settings) == "responses"
+    assert uses_chat_completions_tool_schema("gpt-daybreak-blue-latest", settings) is False
+
+
+def test_resolve_api_type_openai_host_behind_base_url_is_responses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch, "gpt-5", "https://api.openai.com/v1")
+    assert resolve_api_type("gpt-5", settings) == "responses"
+    assert uses_chat_completions_tool_schema("gpt-5", settings) is False
+
+
+def test_resolve_api_type_explicit_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    _settings(monkeypatch, "gpt-daybreak-blue-latest", "https://gateway.example/v1")
+    monkeypatch.setenv("STRIX_API_TYPE", "chat_completions")
+    assert resolve_api_type("gpt-daybreak-blue-latest", Settings()) == "chat_completions"
+    monkeypatch.setenv("STRIX_API_TYPE", "Responses")
+    assert resolve_api_type("gpt-5", Settings()) == "responses"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("None", "none"), ("HIGH", "high"), (" xhigh ", "xhigh"), ("Max", "max")],
+)
+def test_reasoning_effort_is_case_insensitive(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: str
+) -> None:
+    monkeypatch.setenv("STRIX_REASONING_EFFORT", raw)
+    monkeypatch.setenv("STRIX_DEDUPE_REASONING_EFFORT", raw)
+    settings = Settings()
+    assert settings.llm.reasoning_effort == expected
+    assert settings.dedupe.reasoning_effort == expected

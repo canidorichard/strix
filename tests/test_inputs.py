@@ -430,3 +430,31 @@ def test_user_headers_override_openrouter_attribution() -> None:
     assert headers["X-Title"] == "Custom"
     assert headers["X-Tenant"] == "acme"
     assert headers["HTTP-Referer"] == "https://strix.ai"
+
+
+def test_reasoning_effort_omitted_where_chat_completions_reject_it() -> None:
+    # OpenAI serves some reasoning models' reasoning_effort on the Responses API
+    # only; sending it on chat completions fails the request outright.
+    chat = make_model_settings(
+        "high", model_name="gpt-daybreak-blue-latest", api_type="chat_completions"
+    )
+    assert chat.reasoning is None
+    responses = make_model_settings(
+        "high", model_name="gpt-daybreak-blue-latest", api_type="responses"
+    )
+    assert responses.reasoning is not None
+    assert responses.reasoning.effort == "high"
+
+
+def test_reasoning_effort_kept_on_chat_completions_where_supported() -> None:
+    for model in ("gpt-5.6-sol", "gpt-5", "openai/gpt-5.4"):
+        settings = make_model_settings("high", model_name=model, api_type="chat_completions")
+        assert settings.reasoning is not None, model
+        assert settings.reasoning.effort == "high"
+
+
+def test_reasoning_effort_left_to_litellm_on_its_route() -> None:
+    settings = make_model_settings(
+        "high", model_name="litellm/gpt-daybreak-blue-latest", api_type="chat_completions"
+    )
+    assert settings.reasoning is not None
