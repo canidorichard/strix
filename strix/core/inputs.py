@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from typing import TYPE_CHECKING, Any
 
 from agents.model_settings import ModelSettings
@@ -22,9 +21,6 @@ from strix.config.models import (
     routes_through_litellm,
 )
 from strix.core.sessions import scrub_images_from_items
-
-
-logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
