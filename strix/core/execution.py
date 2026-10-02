@@ -125,6 +125,20 @@ _TRANSIENT_MODEL_RETRY_BASE_DELAY_S = 2.0
 _TRANSIENT_MODEL_RETRY_MAX_DELAY_S = 90.0
 
 
+_TOOLS_WITH_REASONING_EFFORT = "Function tools with reasoning_effort are not supported"
+_TOOLS_WITH_REASONING_EFFORT_HINT = (
+    "This model takes reasoning_effort together with tools on the Responses API only: "
+    "set STRIX_API_TYPE=responses, or STRIX_REASONING_EFFORT=none to stay on chat completions."
+)
+
+
+def _failure_text(exc: BaseException) -> str:
+    text = request_log.failure_text(exc)
+    if _model_error_status_code(exc) == 400 and _TOOLS_WITH_REASONING_EFFORT in text:
+        text = f"{text} {_TOOLS_WITH_REASONING_EFFORT_HINT}"
+    return text
+
+
 def _model_error_status_code(exc: BaseException) -> int | None:
     code = getattr(exc, "status_code", None)
     return code if isinstance(code, int) else None
@@ -693,7 +707,7 @@ async def _run_cycle_parked(
         raise
     except Exception as exc:
         logger.exception("error escaped the run cycle for %s; parking as failed", agent_id)
-        await coordinator.set_status(agent_id, "failed", error=request_log.failure_text(exc))
+        await coordinator.set_status(agent_id, "failed", error=_failure_text(exc))
         await notify_parent_on_terminal(coordinator, agent_id, "failed")
         return None
 
@@ -854,9 +868,7 @@ async def _run_cycle(  # noqa: PLR0912, PLR0915
                 await _salvage_stream_to_session(session, pre_run_items, stream, agent_id)
             if isinstance(exc, ProviderRefusalError):
                 logger.warning("agent %s refused by the model provider: %s", agent_id, exc)
-                await coordinator.set_status(
-                    agent_id, "failed", error=request_log.failure_text(exc)
-                )
+                await coordinator.set_status(agent_id, "failed", error=_failure_text(exc))
                 await notify_parent_on_terminal(coordinator, agent_id, "failed")
                 return None
             if isinstance(exc, MaxTurnsExceeded):
@@ -870,7 +882,7 @@ async def _run_cycle(  # noqa: PLR0912, PLR0915
             # non-interactive agent's task: a child that dies still owes its parent a
             # report, and the parent would otherwise wait out its timeout on a message
             # the dead child can no longer send.
-            await coordinator.set_status(agent_id, status, error=request_log.failure_text(exc))
+            await coordinator.set_status(agent_id, status, error=_failure_text(exc))
             await notify_parent_on_terminal(coordinator, agent_id, status)
             if not interactive:
                 raise

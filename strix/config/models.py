@@ -697,27 +697,6 @@ def _catalog_supported_endpoints(model_name: str) -> list[str]:
     return [str(e) for e in endpoints] if isinstance(endpoints, list) else []
 
 
-def chat_completions_accept_reasoning_effort(model_name: str) -> bool:
-    """Whether OpenAI's chat completions take ``reasoning_effort`` for ``model_name``.
-
-    Some reasoning models accept the parameter on the Responses API only and
-    reject a chat completion carrying it (with function tools). LiteLLM's
-    parameter map records which; a model it does not know is given the benefit
-    of the doubt.
-    """
-    if not _catalog_entry(model_name):
-        return True
-    import litellm
-
-    try:
-        params = litellm.get_supported_openai_params(
-            _bare_openai_name(model_name), custom_llm_provider="openai"
-        )
-    except Exception:  # noqa: BLE001 - an unmapped model keeps the parameter
-        return True
-    return "reasoning_effort" in (params or [])
-
-
 def _mirror_api_key_to_provider_env(model_name: str | None, api_key: str) -> None:
     if not model_name:
         return

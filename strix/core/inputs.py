@@ -13,7 +13,6 @@ from strix.config.models import (
     DEFAULT_MODEL_RETRY,
     OPENROUTER_ATTRIBUTION_HEADERS,
     bedrock_route_supports_prompt_caching,
-    chat_completions_accept_reasoning_effort,
     is_bedrock_route,
     is_claude_model,
     is_known_openai_bare_model,
@@ -260,8 +259,7 @@ def make_model_settings(
     has_tools: bool = True,
     api_type: ApiType | None = None,
 ) -> ModelSettings:
-    """``api_type`` is the resolved SDK-native OpenAI route, when known; it decides
-    whether a reasoning model can be sent ``reasoning_effort`` at all."""
+    """``api_type`` is the resolved SDK-native OpenAI route, when known."""
     headers = _request_headers(model_name, extra_headers)
     model_settings = ModelSettings(
         parallel_tool_calls=False if has_tools else None,
@@ -270,20 +268,12 @@ def make_model_settings(
         extra_args=request_timeout_extra_args(request_timeout),
         extra_headers=headers,
     )
-    if (
-        reasoning_effort is not None
-        and reasoning_effort != "none"
-        and model_supports_reasoning(model_name)
-    ):
-        if _route_rejects_reasoning_effort(model_name, api_type):
-            logger.info(
-                "Omitting reasoning_effort=%s: %s does not accept it on chat completions",
-                reasoning_effort,
-                model_name,
-            )
-        else:
+    if reasoning_effort is not None and model_supports_reasoning(model_name):
+        if reasoning_effort != "none":
+            model_settings = model_settings.resolve(_reasoning_settings(reasoning_effort))
+        elif _explicit_none_required(model_name, api_type):
             model_settings = model_settings.resolve(
-                _reasoning_settings(reasoning_effort),
+                ModelSettings(reasoning=Reasoning(effort="none"))
             )
     if force_required_tool_choice and _accepts_required_tool_choice(model_name):
         model_settings = model_settings.resolve(ModelSettings(tool_choice="required"))
@@ -298,12 +288,12 @@ def make_model_settings(
     return model_settings
 
 
-def _route_rejects_reasoning_effort(model_name: str, api_type: ApiType | None) -> bool:
-    """LiteLLM drops unsupported parameters itself on its own route; the
-    SDK-native chat completions route sends whatever it is given."""
-    if api_type != "chat_completions" or routes_through_litellm(model_name):
-        return False
-    return not chat_completions_accept_reasoning_effort(model_name)
+def _explicit_none_required(model_name: str, api_type: ApiType | None) -> bool:
+    """OpenAI's chat completions reason at a default effort when the field is
+    absent, and the newer reasoning models reject function tools at any effort
+    but ``none``, so ``none`` has to be sent, not left out. LiteLLM's own route
+    maps the field per provider and is left alone."""
+    return api_type == "chat_completions" and not routes_through_litellm(model_name)
 
 
 def _request_headers(
