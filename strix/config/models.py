@@ -660,35 +660,21 @@ def configure_sdk_api_route(model_name: str, settings: Settings) -> None:
     set_default_openai_api(api_type)
 
 
-_OPENAI_HOSTS = frozenset({"api.openai.com"})
-_CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions"
+_RESPONSES_ENDPOINT = "/v1/responses"
 
 
 def resolve_api_type(model_name: str, settings: Settings) -> ApiType:
     """The SDK-native OpenAI route for ``model_name``: Responses or chat completions.
 
-    An explicit ``STRIX_API_TYPE`` wins. Without a base URL the request goes to
-    OpenAI itself, where every model is served by the Responses API. With a base
-    URL the model decides, not the URL: a model whose catalog entry lists no
-    ``/v1/chat/completions`` endpoint cannot be reached there at all, and
-    api.openai.com behind a base URL is still OpenAI. Anything else is an
-    OpenAI-compatible gateway whose common denominator is chat completions.
+    An explicit ``STRIX_API_TYPE`` wins. Otherwise the model decides: Responses
+    when LiteLLM's catalog lists ``/v1/responses`` for it, chat completions for
+    everything else.
     """
     if settings.llm.api_type is not None:
         return settings.llm.api_type
-    api_base = (settings.llm.api_base or "").strip()
-    if not api_base or _is_openai_host(api_base):
-        return "responses"
-    endpoints = _catalog_supported_endpoints(model_name)
-    if endpoints and _CHAT_COMPLETIONS_ENDPOINT not in endpoints:
+    if _RESPONSES_ENDPOINT in _catalog_supported_endpoints(model_name):
         return "responses"
     return "chat_completions"
-
-
-def _is_openai_host(api_base: str) -> bool:
-    from urllib.parse import urlsplit
-
-    return (urlsplit(api_base).hostname or "").lower() in _OPENAI_HOSTS
 
 
 def _catalog_supported_endpoints(model_name: str) -> list[str]:
@@ -899,9 +885,7 @@ def uses_chat_completions_tool_schema(model_name: str, settings: Settings) -> bo
     model = model_name.strip().lower()
     if "/" in model and not model.startswith("openai/"):
         return True
-    if settings.llm.api_type is not None or settings.llm.api_base:
-        return resolve_api_type(model_name, settings) == "chat_completions"
-    return not model_supports_reasoning(model_name)
+    return resolve_api_type(model_name, settings) == "chat_completions"
 
 
 def supports_strict_tool_schemas(model_name: str) -> bool:

@@ -113,7 +113,7 @@ def test_api_type_override_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("api_type", "expected"),
     [
-        (None, OpenAIChatCompletionsModel),
+        (None, OpenAIResponsesModel),
         ("chat_completions", OpenAIChatCompletionsModel),
         ("responses", OpenAIResponsesModel),
     ],
@@ -121,7 +121,7 @@ def test_api_type_override_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_api_type_overrides_the_api_base_route(
     monkeypatch: pytest.MonkeyPatch, api_type: str | None, expected: type
 ) -> None:
-    """``LLM_API_BASE`` defaults to chat completions. ``STRIX_API_TYPE`` must win."""
+    """gpt-5 is catalogued on /v1/responses, so a base URL alone changes nothing."""
     monkeypatch.setattr(_openai_shared, "_use_responses_by_default", True)
     monkeypatch.setattr(_openai_shared, "_default_openai_client", None)
     monkeypatch.setattr(_openai_shared, "_default_openai_key", None)
@@ -152,35 +152,20 @@ def _settings(monkeypatch: pytest.MonkeyPatch, model: str, api_base: str | None)
     return Settings()
 
 
-def test_resolve_api_type_without_base_url_is_responses(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert resolve_api_type("gpt-5", _settings(monkeypatch, "gpt-5", None)) == "responses"
-    assert resolve_api_type("gpt-4o", _settings(monkeypatch, "gpt-4o", None)) == "responses"
-
-
-def test_resolve_api_type_gateway_defaults_to_chat_completions(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "api_base", [None, "https://api.openai.com/v1", "https://gateway.example/v1"]
+)
+def test_resolve_api_type_follows_the_catalog_not_the_base_url(
+    monkeypatch: pytest.MonkeyPatch, api_base: str | None
 ) -> None:
-    settings = _settings(monkeypatch, "gpt-5.6-sol", "https://gateway.example/v1")
-    assert resolve_api_type("gpt-5.6-sol", settings) == "chat_completions"
-    assert resolve_api_type("my-private-model", settings) == "chat_completions"
-
-
-def test_resolve_api_type_responses_only_model_ignores_base_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A model LiteLLM lists on /v1/responses alone cannot be served by chat completions."""
-    settings = _settings(monkeypatch, "gpt-daybreak-blue-latest", "https://gateway.example/v1")
-    assert resolve_api_type("gpt-daybreak-blue-latest", settings) == "responses"
-    assert resolve_api_type("openai/gpt-daybreak-blue-latest", settings) == "responses"
-    assert uses_chat_completions_tool_schema("gpt-daybreak-blue-latest", settings) is False
-
-
-def test_resolve_api_type_openai_host_behind_base_url_is_responses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = _settings(monkeypatch, "gpt-5", "https://api.openai.com/v1")
-    assert resolve_api_type("gpt-5", settings) == "responses"
-    assert uses_chat_completions_tool_schema("gpt-5", settings) is False
+    """Responses when LiteLLM lists /v1/responses for the model, chat completions otherwise."""
+    settings = _settings(monkeypatch, "gpt-5", api_base)
+    for model in ("gpt-5", "gpt-5.6-sol", "openai/gpt-5.4", "gpt-daybreak-blue-latest"):
+        assert resolve_api_type(model, settings) == "responses", model
+        assert uses_chat_completions_tool_schema(model, settings) is False, model
+    for model in ("gpt-4o", "my-private-model"):
+        assert resolve_api_type(model, settings) == "chat_completions", model
+        assert uses_chat_completions_tool_schema(model, settings) is True, model
 
 
 def test_resolve_api_type_explicit_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,6 +199,6 @@ def test_configure_sdk_api_route_follows_the_given_model(
     settings = _settings(monkeypatch, "gpt-5", "https://gateway.example/v1")
 
     models.configure_sdk_api_route("gpt-5", settings)
-    models.configure_sdk_api_route("gpt-daybreak-blue-latest", settings)
+    models.configure_sdk_api_route("my-private-model", settings)
 
-    assert routes == ["chat_completions", "responses"]
+    assert routes == ["responses", "chat_completions"]
