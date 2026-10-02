@@ -18,11 +18,11 @@ from openai import RateLimitError
 
 from strix.agents.factory import build_strix_agent, make_child_factory
 from strix.agents.prompt import render_scope_prompt, render_system_prompt
-from strix.config import load_settings
+from strix.config import codex, load_settings
 from strix.config.models import (
     StrixProvider,
+    configure_sdk_api_route,
     configure_sdk_model_defaults,
-    resolve_api_type,
     supports_strict_tool_schemas,
     uses_chat_completions_tool_schema,
 )
@@ -258,6 +258,10 @@ async def run_strix_scan(
         raise RuntimeError(
             "No LLM model configured. Set STRIX_LLM env or pass model= to run_strix_scan().",
         )
+    if resolved_model != (settings.llm.model or "").strip() and not codex.subscription_model(
+        resolved_model
+    ):
+        configure_sdk_api_route(resolved_model, settings)
     logger.info("LLM model resolved: %s", resolved_model)
     chat_completions_tools = uses_chat_completions_tool_schema(resolved_model, settings)
     strict_tool_schemas = supports_strict_tool_schemas(resolved_model)
@@ -373,7 +377,7 @@ async def run_strix_scan(
             request_timeout=settings.llm.timeout,
             prompt_cache=settings.llm.prompt_cache,
             extra_headers=settings.llm.extra_headers,
-            api_type=resolve_api_type(resolved_model, settings),
+            api_type="chat_completions" if chat_completions_tools else "responses",
         )
         run_config = RunConfig(
             model=resolved_model,

@@ -10,6 +10,7 @@ from agents.models import _openai_shared
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from agents.models.openai_responses import OpenAIResponsesModel
 
+from strix.config import models
 from strix.config.models import (
     StrixProvider,
     _NonStreamingModel,
@@ -202,3 +203,17 @@ def test_reasoning_effort_is_case_insensitive(
     settings = Settings()
     assert settings.llm.reasoning_effort == expected
     assert settings.dedupe.reasoning_effort == expected
+
+
+def test_configure_sdk_api_route_follows_the_given_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``model=`` override picks its own route, not ``STRIX_LLM``'s."""
+    routes: list[str] = []
+    monkeypatch.setattr(models, "set_default_openai_api", routes.append)
+    settings = _settings(monkeypatch, "gpt-5", "https://gateway.example/v1")
+
+    models.configure_sdk_api_route("gpt-5", settings)
+    models.configure_sdk_api_route("gpt-daybreak-blue-latest", settings)
+
+    assert routes == ["chat_completions", "responses"]

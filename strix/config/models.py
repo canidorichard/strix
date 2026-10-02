@@ -649,10 +649,15 @@ def configure_sdk_model_defaults(settings: Settings) -> None:
     if llm.api_base:
         os.environ["OPENAI_BASE_URL"] = llm.api_base
         _configure_litellm_default("api_base", llm.api_base)
-    api_type = resolve_api_type(llm.model or "", settings)
-    logger.info("OpenAI API route: %s", api_type)
-    set_default_openai_api(api_type)
+    configure_sdk_api_route(llm.model or "", settings)
     _configure_extra_headers(llm)
+
+
+def configure_sdk_api_route(model_name: str, settings: Settings) -> None:
+    """Point SDK-native OpenAI requests for ``model_name`` at Responses or chat completions."""
+    api_type = resolve_api_type(model_name, settings)
+    logger.info("OpenAI API route for %s: %s", model_name, api_type)
+    set_default_openai_api(api_type)
 
 
 _OPENAI_HOSTS = frozenset({"api.openai.com"})
