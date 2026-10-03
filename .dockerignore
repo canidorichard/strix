@@ -1,0 +1,15 @@
+.git
+.github
+.gitignore
+.dockerignore
+strix_runs
+build
+dist
+docs
+tests
+benchmarks
+skills
+strix.spec
+uv.lock
+__pycache__
+*.pyc
